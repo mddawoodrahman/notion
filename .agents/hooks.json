@@ -1,0 +1,45 @@
+{
+  "osborne-post-tool-doc-tracker": {
+    "enabled": true,
+    "PostToolUse": [
+      {
+        "matcher": "^(write_to_file|replace_file_content|multi_replace_file_content)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .agents/hooks/PostToolUse.ps1",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "osborne-doc-advisory": {
+    "enabled": true,
+    "PostInvocation": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .agents/hooks/PostInvocation.ps1",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "osborne-engineering-gate": {
+    "enabled": true,
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .agents/hooks/Stop.ps1",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
