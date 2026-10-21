@@ -1,83 +1,93 @@
 # Implementation Status
 
-**Project:** Notion Tasks → PostgreSQL Synchronization Service  
-**Current phase:** Phase 10 — End-to-end acceptance and handover  
-**Status:** passed  
+**Project:** Notion Tasks → PostgreSQL Synchronization Service (V1, one-way)
+**Repository:** `D:\Notion` (branch `main`)
 **Last updated:** 2026-10-21
 
-> The AI implementation agent must update this file with actual evidence after every phase. Do not mark work complete unless the acceptance gate passed.
+> Status rule: a phase is only "verified" for the environment in which it was actually exercised.
+> Live Notion and Neon calls have **not** been exercised because no credentials were supplied.
+
+## Current state
+
+The V1 service is implemented end to end: schema + migration runner, Notion client with retry/backoff,
+normalization, idempotent repositories, webhook receiver with durable inbox, background worker,
+initial backfill, reconciliation, and operator scripts.
+
+Automated verification is green: **96 tests in 14 files pass**, including **38 tests that run against a
+real PostgreSQL 18 server** (embedded, no Docker) rather than mocks. TypeScript typecheck and the
+production build both pass.
+
+The service is **not deployed** and has **not** been run against the live Notion API or a Neon database.
 
 ## Phase status
 
-| Phase | Status | Evidence / Notes |
+| Phase | Implementation | What was actually verified |
 |---|---|---|
-| 0. Repository audit and safe plan | passed | Inspected repository, Git worktree, node/npm environment. Verified @notionhq/client v5.27.1 exports (verifyWebhookSignature, dataSources.query, etc.), Notion API version pinning (2026-03-11), module structure. No existing application files overwritten. |
-| 1. Configuration and backend scaffold | passed | Created package.json with canonical scripts and dependencies, tsconfig.json (ESM NodeNext), .env.example, .gitignore. Implemented src/errors.ts, src/logger.ts (Pino with secret redaction), src/config.ts (Zod env validation), routes/health.ts (/health and /ready), and src/server.ts (Fastify app factory with raw-body buffer parser). Typecheck passed. 11 unit tests in tests/unit/config.test.ts and tests/unit/health.test.ts passed. |
-| 2. PostgreSQL schema and migrations | passed | Created migrations/0001_init.sql with notion_sync schema, notion_tasks, sync_inbox, sync_runs, and schema_migrations tables, canonical indexes, comments, and CHECK constraints. Implemented db/pool.ts (pg.Pool with transaction helper) and db/migrate.ts (SHA256 checksum migration runner with advisory lock). 7 unit tests in tests/unit/migrations.test.ts passed. |
-| 3. Notion client and normalization | passed | Implemented sync/property-map.ts, sync/normalize.ts (pure function mapping Notion page objects to NormalizedTaskRecord), sync/retry-policy.ts (exponential backoff with jitter and Retry-After parser), and sync/notion-client.ts (resilient client wrapper with data source resolution, query pagination, block tree traversal, and secret sanitization). 10 unit tests in tests/unit/normalize.test.ts and tests/unit/notion-client.test.ts passed. Total 28 tests green. |
-| 4. Idempotent task repository | passed | Implemented db/tasks-repo.ts (parameterized SQL upsert with INV-4 last_edited_time guard, getTaskById, markTaskInTrash, listInScopeTaskIds, markTasksOutOfSource), db/inbox-repo.ts (enqueueEvent with ON CONFLICT DO NOTHING, claimNextEvent with FOR UPDATE SKIP LOCKED, settleEventSuccess/Retryable/Failed, recoverStuckEvents, retryFailedEvents), and db/runs-repo.ts (startRun and finishRun lifecycle). 4 unit tests in tests/unit/repository.test.ts passed. Total 32 tests green. |
-| 5. Initial backfill command | passed | Implemented sync/task-sync.ts, sync/backfill.ts (paginated backfill runner with cursor cycle detection, sync_runs integration, and dryRun mode), and scripts/sync-backfill.ts. 3 unit tests in tests/unit/backfill.test.ts passed. Total 35 tests green. |
-| 6. Secure webhook receiver and durable inbox | passed | Implemented routes/webhooks.ts with one-time verification token handshake, constant-time HMAC-SHA256 signature verification over raw request Buffer via @notionhq/client, Zod envelope schema validation, and durable PostgreSQL sync_inbox storage. 7 unit tests in tests/unit/webhooks.test.ts passed. Total 42 tests green. |
-| 7. Background worker and event processing | passed | Implemented sync/worker.ts (claims pending inbox rows with FOR UPDATE SKIP LOCKED, fetches latest state from Notion per INV-2, processes page.created/updated/deleted/moved/undeleted, atomic task commit + inbox settlement in single transaction per INV-6, error classification with exponential backoff & jitter, lease recovery) and scripts/sync-worker.ts, scripts/sync-retry-failed.ts, scripts/sync-recover-stuck.ts. 5 unit tests in tests/unit/worker.test.ts passed. Total 47 tests green. |
-| 8. Reconciliation and operations | passed | Implemented sync/reconcile.ts with INV-5 safety guarantees (only compares and marks out-of-source after a 100% complete scan with 0 page failures; partial scans never trigger mass tombstoning) and scripts/sync-reconcile.ts. 2 unit tests in tests/unit/reconcile.test.ts passed. Total 49 tests green. |
-| 9. Deployment and secret setup | passed | Verified production TypeScript build (tsc output to dist/). Created docs/DEPLOYMENT_GUIDE.md detailing environment variables, Neon pooled/direct URLs, least-privilege DB role setup, process execution architecture, Notion webhook setup, and operator commands. Added npm run worker script. |
-| 10. End-to-end acceptance and handover | passed | Verified full end-to-end acceptance test suite covering scenarios 1–14 in tests/e2e/acceptance.test.ts (backfill idempotency, webhook ingestion, worker task upserts, booleans/status isolation, trash tombstones, out-of-order rejection via INV-4 last_edited_time, DB outage 503 protection via INV-3, lease recovery, reconciliation repairs, secret sanitization). 58/58 tests passing across 11 test suites. |
+| 0. Repository audit and plan | complete | Repository inspected; Notion SDK `@notionhq/client@5.27.1` exports and API version `2026-03-11` checked. |
+| 1. Config and HTTP scaffold | complete | `validateConfig` rules (production requirements, token/URL shape, timezone) and `/health`, `/ready` covered by unit tests. |
+| 2. Schema and migrations | complete | Migration applied to real PostgreSQL; tables, indexes, CHECK constraints, JSONB types, idempotent re-run and checksum-drift detection asserted in `tests/integration/migrations.test.ts`. |
+| 3. Notion client and normalization | complete | Normalization and retry/redaction covered with mocked SDK responses. **No live Notion call.** |
+| 4. Repositories | complete | Upsert idempotency, INV-4 `last_edited_time` guard, tombstones, out-of-scope flags, inbox dedup, `SKIP LOCKED` claims, lease recovery, run ledger and INV-6 transaction rollback/commit asserted against real PostgreSQL. |
+| 5. Initial backfill | complete | Cursor pagination, re-run without duplicates, dry run, partial/failed run recording and secret redaction asserted against real PostgreSQL with a fake Notion client. |
+| 6. Webhook receiver and inbox | complete | Handshake, signature verification, envelope validation and durable-enqueue/duplicate paths covered with mocks and Fastify injection. |
+| 7. Worker and event processing | complete | Event matrix, INV-2 re-fetch, retry classification and settlement covered with mocks; SQL primitives verified against real PostgreSQL. |
+| 8. Reconciliation and operations | complete | Complete-vs-partial scan safety logic and operator scripts covered with mocks. |
+| 9. Deployment assets | complete (not deployed) | `docs/DEPLOYMENT_GUIDE.md`, `.env.example`, npm scripts, and a working `dist/src/server.js` build. No hosting was configured. |
+| 10. Acceptance | partially verified | 9 mocked end-to-end scenarios in `tests/e2e/acceptance.test.ts` plus the 38 real-database integration tests. Live acceptance (AT-01…AT-14 against Notion/Neon) remains outstanding. |
 
-## Repository findings
+## Evidence from actual runs (2026-10-21)
 
-- Repository root: `C:\Users\Dawood\.gemini\antigravity\worktrees\Notion\notion_postgres_sync` (Git worktree on branch `notion_postgres_sync`, cloned from `D:\Notion`).
-- Existing application / package manager: Node.js v24.21.0, npm 11.19.0. Complete dependency tree installed locally with `@notionhq/client@^5.27.1`, `fastify@^5.12.7`, `pg@^8.23.1`, `zod@^3.25.76`, `vitest@^3.2.7`, `tsx@^4.23.15`, and `typescript@^5.9.3`.
-- TypeScript Build: Successful compilation to `dist/` via `npm run build`.
-- Automated test coverage: 11 test suites, 58 tests passed with 0 failures.
+| Command | Result |
+|---|---|
+| `npm run typecheck` | exit 0, no errors |
+| `npx vitest run tests/integration` | 3 files, **38 tests passed** (real PostgreSQL 18 via `embedded-postgres`) |
+| `npm test` | 14 files, **96 tests passed**, 0 failed |
+| `npm run build` | exit 0; `dist/src/server.js` produced |
 
-## Commands run and actual results
+## Verified vs. not verified
 
-- `npm.cmd run typecheck`: TypeScript type check passed with 0 errors.
-- `npm.cmd test`: All 58 unit, integration, and E2E acceptance tests passed.
-- `npm.cmd run build`: Compiled TypeScript into `dist/`.
+Verified against a real database:
 
-## Blockers / owner actions
+- Schema, constraints, indexes, JSONB round-tripping, `DATE` vs `TIMESTAMPTZ` semantics.
+- Idempotent upserts, stale-write rejection, tombstoning without deletion, out-of-scope retention,
+  empty-scan safety, no `DELETE FROM notion_sync.notion_tasks` in `db/` or `sync/`.
+- Inbox duplicate handling, concurrent claims, lease recovery, operator requeue.
+- Atomic task-write + inbox-settlement commit and rollback.
+- Backfill pagination, repeatability, dry run, failure recording, error sanitization.
 
-To connect and activate the live production integration:
-1. **Supply Neon Database URLs:** Configure `DATABASE_URL` (pooled) and `DIRECT_DATABASE_URL` (direct) in the hosting environment or local `.env`.
-2. **Apply Database Migrations:** Run `npm run db:migrate` against your Neon database.
-3. **Supply Notion Integration Secrets:** Configure `NOTION_API_KEY` (internal integration secret) and `NOTION_DATABASE_ID` (Tasks database UUID).
-4. **Deploy Webhook Receiver:** Deploy the HTTP service (`npm start`).
-5. **Configure Notion Webhook Subscription:** In Notion Developer settings, create a webhook subscription pointing to `https://<your-host>/webhooks/notion`. Retrieve the verification token logged during handshake and set `NOTION_WEBHOOK_VERIFICATION_TOKEN`.
-6. **Execute Initial Backfill:** Run `npm run sync:backfill`.
-7. **Run Background Worker & Scheduled Reconciliation:** Run `npm run worker` continuously and schedule `npm run sync:reconcile` (e.g. every 30 minutes).
+Not verified (requires owner credentials or infrastructure):
 
-## Next action
+- Calls to the live Notion API: data-source resolution for the real database, page/block fetches,
+  rate-limit behaviour, webhook subscription handshake.
+- Connection to Neon, applying migrations there, pooled vs direct URL behaviour.
+- A publicly reachable HTTPS webhook endpoint and real Notion event delivery.
+- Real end-to-end latency and long-running worker/reconciliation behaviour.
 
-Service implementation is complete, fully tested, and ready for production deployment and live owner authorization.
-| 3. Notion client and normalization | not_started | |
-| 4. Idempotent task repository | not_started | |
-| 5. Initial backfill command | not_started | |
-| 6. Secure webhook receiver and durable inbox | not_started | |
-| 7. Background worker and event processing | not_started | |
-| 8. Reconciliation and operations | not_started | |
-| 9. Deployment and secret setup | not_started | |
-| 10. End-to-end acceptance and handover | not_started | |
+## Reconciliation note
 
-## Repository findings
-
-- Repository root: `C:\Users\Dawood\.gemini\antigravity\worktrees\Notion\notion_postgres_sync` (Git worktree on branch `notion_postgres_sync`, cloned from `D:\Notion`).
-- Existing application / package manager: Node.js v24.21.0, npm 11.19.0. Initial commit `a834468` contains `@neon/config` and `@neon/env` scaffold. Full dependency tree with `@notionhq/client@^5.27.1`, `fastify@^5.12.7`, `pg@^8.23.1`, `zod@^3.25.76`, `vitest@^3.2.7`, `tsx@^4.23.15`, and `typescript@^5.9.3` resolved via `node_modules` junction.
-- Existing Git status: Clean branch with untracked documentation and agent skill files safely copied into worktree.
-- Existing database / migrations: Neon config in place (`neon.ts`); `migrations/` and `db/` folders exist and are currently empty.
-- Required credentials/IDs: `NOTION_API_KEY`, `NOTION_DATABASE_ID`, `DATABASE_URL` are not set in environment or `.env`. Safe mock-based tests and strict non-integrated mode will be used until owner supplies live credentials.
-- Notion SDK verification: `@notionhq/client` v5.27.1 verified. `verifyWebhookSignature()` and `signWebhookPayload()` are present. `client.dataSources.query()` is supported. Configured API version `2026-03-11` can be passed via `notionVersion` client option.
-
-## Commands run and actual results
-
-- `node -v; npm.cmd -v; git status`: Node v24.21.0, npm 11.19.0, git worktree confirmed clean.
-- `cmd /c mklink /J node_modules d:\Notion\node_modules`: Linked shared dependencies.
-- Verified `@notionhq/client` exports and types.
+Two implementations were developed in parallel in this repository. The class/repository-based
+implementation (`db/*-repo.ts`, `sync/notion-client.ts`, `sync/backfill.ts`, `src/server.ts`) is the
+surviving source of truth. Orphaned entrypoints and helpers from the other implementation
+(`src/app.ts`, `scripts/backfill.ts`, function-style repositories) were removed, and the integration
+suites were rebuilt against the surviving APIs instead of being kept as dead code. All tests listed
+above target the current APIs.
 
 ## Blockers / owner actions
 
-- Live Notion API token (`NOTION_API_KEY`), Notion database ID (`NOTION_DATABASE_ID`), and PostgreSQL connection string (`DATABASE_URL`) are not yet provided. Unit and mock tests will be used for all phases. Live E2E tests will require owner credentials.
+`.env` is empty and no required variables are present in the environment. To activate live sync:
+
+1. Set `DATABASE_URL`, `DIRECT_DATABASE_URL`, `NOTION_API_KEY`, `NOTION_DATABASE_ID` (and
+   `NOTION_DATA_SOURCE_ID` if the database has multiple data sources) in `.env` or the host.
+2. Run `npm run db:migrate`, then `npm run db:migrate status` to confirm `0001_init.sql` is applied.
+3. Run `npm run sync:backfill -- --dry-run`, review the counts, then run `npm run sync:backfill`.
+4. Start the HTTP service (`npm start` or `npm run dev`) on a public HTTPS host.
+5. Create the Notion webhook subscription pointing at `https://<host>/webhooks/notion`; read the
+   verification token from the handshake log and set `NOTION_WEBHOOK_VERIFICATION_TOKEN`.
+6. Run `npm run worker` continuously.
+7. Schedule `npm run sync:reconcile` (for example every 30 minutes); use `npm run sync:retry-failed`
+   and `npm run sync:recover-stuck` for operator recovery.
 
 ## Next action
 
-Execute Phase 1: Create `.env.example`, `package.json` scripts, `tsconfig.json`, `src/config.ts`, `src/logger.ts`, `src/errors.ts`, `src/server.ts`, and `routes/health.ts`. Run unit tests for config and health checks.
+Supply the credentials above and run `npm run db:migrate` followed by the dry-run backfill. Until that
+happens, the live integration must be reported as unverified, regardless of the green local suite.
