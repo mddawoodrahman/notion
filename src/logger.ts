@@ -1,39 +1,34 @@
-import { pino, type Logger } from 'pino';
+import pino from "pino";
 
-import type { AppConfig } from './config.js';
+const redactPaths = [
+  "NOTION_API_KEY",
+  "NOTION_WEBHOOK_VERIFICATION_TOKEN",
+  "DATABASE_URL",
+  "DIRECT_DATABASE_URL",
+  "TEST_DATABASE_URL",
+  "headers.authorization",
+  "headers.Authorization",
+  "headers['x-notion-signature']",
+  "headers['X-Notion-Signature']",
+  "req.headers.authorization",
+  "req.headers['x-notion-signature']",
+  "password",
+  "*.password",
+  "token",
+  "*.token",
+  "verification_token",
+  "payload.verification_token",
+];
 
-export type { Logger };
-
-export const SERVICE_NAME = 'notion-tasks-sync';
-
-/**
- * Structured JSON logger with secret redaction. Log lines are operational
- * metadata only — never request bodies, tokens or full page content.
- */
-export function createLogger(config: Pick<AppConfig, 'env' | 'logLevel'>): Logger {
-  return pino({
-    level: config.logLevel,
-    base: { service: SERVICE_NAME, env: config.env },
-    redact: {
-      paths: [
-        'req.headers.authorization',
-        'req.headers["x-notion-signature"]',
-        'headers.authorization',
-        '*.authorization',
-        '*.Authorization',
-        '*.verification_token',
-        '*.verificationToken',
-        '*.apiKey',
-        '*.api_key',
-        '*.NOTION_API_KEY',
-        '*.DATABASE_URL',
-        '*.databaseUrl',
-        '*.connectionString',
-        '*.password',
-        '*.cookie',
-      ],
-      censor: '[REDACTED]',
-    },
-    timestamp: pino.stdTimeFunctions.isoTime,
-  });
-}
+export const logger = pino({
+  level: process.env.LOG_LEVEL || (process.env.NODE_ENV === "test" ? "silent" : "info"),
+  redact: {
+    paths: redactPaths,
+    censor: "[REDACTED]",
+  },
+  serializers: {
+    err: pino.stdSerializers.err,
+    req: pino.stdSerializers.req,
+    res: pino.stdSerializers.res,
+  },
+});

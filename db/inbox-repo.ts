@@ -1,67 +1,22 @@
-/**
- * Durable webhook inbox. Events are stored before acknowledgement, claimed
- * with `FOR UPDATE SKIP LOCKED`, and settled in the same transaction as the
- * task write. Failed events are terminal until an operator requeues them.
- */
-
-import type { Queryable } from './queryable.js';
-
-export type InboxStatus = 'pending' | 'processing' | 'processed' | 'failed';
+import pg from "pg";
 
 export interface InboxEventInput {
-  readonly eventId: string;
-  readonly eventType: string;
-  readonly entityType?: string | null;
-  readonly entityId?: string | null;
-  readonly eventTimestamp?: Date | null;
-  readonly payload: unknown;
+  eventId: string;
+  eventType: string;
+  entityType?: string | null;
+  entityId?: string | null;
+  eventTimestamp?: string | null;
+  payload: Record<string, unknown>;
 }
 
-export interface InboxEvent {
-  readonly eventId: string;
-  readonly eventType: string;
-  readonly entityType: string | null;
-  readonly entityId: string | null;
-  readonly eventTimestamp: Date | null;
-  readonly payload: unknown;
-  readonly status: InboxStatus;
-  readonly attempts: number;
-  readonly receivedAt: Date;
-  readonly availableAt: Date;
-  readonly lockedAt: Date | null;
-  readonly processedAt: Date | null;
-  readonly lastError: string | null;
-}
-
-export interface InboxCounts {
-  readonly pending: number;
-  readonly processing: number;
-  readonly processed: number;
-  readonly failed: number;
-}
-
-export type SettleEventOptions =
-  | { readonly eventId: string; readonly outcome: 'processed' }
-  | {
-      readonly eventId: string;
-      readonly outcome: 'retry';
-      readonly availableAt: Date;
-      readonly lastError?: string;
-    }
-  | {
-      readonly eventId: string;
-      readonly outcome: 'failed';
-      readonly lastError: string;
-    };
-
-interface InboxDbRow {
+export interface InboxEventRecord {
   event_id: string;
   event_type: string;
   entity_type: string | null;
   entity_id: string | null;
   event_timestamp: Date | null;
-  payload: unknown;
-  status: InboxStatus;
+  payload: Record<string, unknown>;
+  status: "pending" | "processing" | "processed" | "failed";
   attempts: number;
   received_at: Date;
   available_at: Date;
@@ -70,149 +25,167 @@ interface InboxDbRow {
   last_error: string | null;
 }
 
-/** Store one event. Returns false when the `event_id` was already present. */
-export async function enqueueEvent(db: Queryable, event: InboxEventInput): Promise<boolean> {
-  const result = await db.query(
-    `INSERT INTO notion_sync.sync_inbox
-         (event_id, event_type, entity_type, entity_id, event_timestamp, payload)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-     ON CONFLICT (event_id) DO NOTHING
-     RETURNING event_id`,
-    [
+export class InboxRepository {
+  /**
+   * Enqueues an inbound webhook event durably into sync_inbox.
+   * Recognizes duplicate deliveries idempotently via ON CONFLICT (event_id) DO NOTHING.
+   */
+  static async enqueueEvent(
+    db: pg.Pool | pg.PoolClient,
+    event: InboxEventInput
+  ): Promise<{ isDuplicate: boolean; eventId: string }> {
+    const query = `
+      INSERT INTO notion_sync.sync_inbox (
+        event_id, event_type, entity_type, entity_id, event_timestamp, payload, status
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6::jsonb, 'pending'
+      )
+      ON CONFLICT (event_id) DO NOTHING
+      RETURNING event_id;
+    `;
+
+    const values = [
       event.eventId,
       event.eventType,
       event.entityType ?? null,
       event.entityId ?? null,
-      event.eventTimestamp ?? null,
+      event.eventTimestamp ? new Date(event.eventTimestamp) : null,
       JSON.stringify(event.payload),
-    ],
-  );
-  return (result.rowCount ?? 0) > 0;
-}
+    ];
 
-/** Claim exactly one due event; safe under N concurrent workers (INV-1). */
-export async function claimNextEvent(db: Queryable): Promise<InboxEvent | null> {
-  const result = await db.query<InboxDbRow>(`
-    WITH claimed AS (
+    const result = await db.query(query, values);
+    const isDuplicate = (result.rowCount ?? 0) === 0;
+
+    return {
+      isDuplicate,
+      eventId: event.eventId,
+    };
+  }
+
+  /**
+   * Claims exactly one pending event safely under concurrent execution using FOR UPDATE SKIP LOCKED.
+   * Increments attempts on claim.
+   */
+  static async claimNextEvent(
+    db: pg.Pool | pg.PoolClient
+  ): Promise<InboxEventRecord | null> {
+    const query = `
+      WITH claimed AS (
         SELECT event_id
           FROM notion_sync.sync_inbox
          WHERE status = 'pending'
            AND available_at <= NOW()
-         ORDER BY available_at, received_at
+         ORDER BY available_at ASC, received_at ASC
          FOR UPDATE SKIP LOCKED
          LIMIT 1
-    )
-    UPDATE notion_sync.sync_inbox i
-       SET status    = 'processing',
-           locked_at = NOW(),
-           attempts  = i.attempts + 1
-      FROM claimed c
-     WHERE i.event_id = c.event_id
-    RETURNING i.*
-  `);
-  const row = result.rows[0];
-  return row === undefined ? null : mapInboxRow(row);
-}
+      )
+      UPDATE notion_sync.sync_inbox i
+         SET status    = 'processing',
+             locked_at = NOW(),
+             attempts  = i.attempts + 1
+        FROM claimed c
+       WHERE i.event_id = c.event_id
+      RETURNING i.*;
+    `;
 
-/**
- * Settle a claimed event. The `status = 'processing'` guard means a stale or
- * duplicate worker cannot overwrite a terminal state.
- */
-export async function settleEvent(db: Queryable, options: SettleEventOptions): Promise<boolean> {
-  let result;
-  switch (options.outcome) {
-    case 'processed':
-      result = await db.query(
-        `UPDATE notion_sync.sync_inbox
-            SET status = 'processed', processed_at = NOW(), locked_at = NULL, last_error = NULL
-          WHERE event_id = $1 AND status = 'processing'`,
-        [options.eventId],
-      );
-      break;
-    case 'retry':
-      result = await db.query(
-        `UPDATE notion_sync.sync_inbox
-            SET status = 'pending', locked_at = NULL, available_at = $2, last_error = $3
-          WHERE event_id = $1 AND status = 'processing'`,
-        [options.eventId, options.availableAt, options.lastError ?? null],
-      );
-      break;
-    case 'failed':
-      result = await db.query(
-        `UPDATE notion_sync.sync_inbox
-            SET status = 'failed', locked_at = NULL, last_error = $2
-          WHERE event_id = $1 AND status = 'processing'`,
-        [options.eventId, options.lastError],
-      );
-      break;
+    const res = await db.query<InboxEventRecord>(query);
+    return res.rows[0] ?? null;
   }
-  return (result.rowCount ?? 0) > 0;
-}
 
-/** Return leases older than `leaseSeconds` to the pending queue. */
-export async function recoverStuckEvents(db: Queryable, leaseSeconds: number): Promise<number> {
-  const result = await db.query(
-    `UPDATE notion_sync.sync_inbox
-        SET status = 'pending', locked_at = NULL, available_at = NOW()
-      WHERE status = 'processing'
-        AND locked_at < NOW() - make_interval(secs => $1)`,
-    [leaseSeconds],
-  );
-  return result.rowCount ?? 0;
-}
-
-/** Operator-only requeue of terminal failures. `last_error` is preserved. */
-export async function requeueFailedEvents(db: Queryable): Promise<number> {
-  const result = await db.query(
-    `UPDATE notion_sync.sync_inbox
-        SET status = 'pending', attempts = 0, available_at = NOW(), locked_at = NULL
-      WHERE status = 'failed'`,
-  );
-  return result.rowCount ?? 0;
-}
-
-export async function getInboxEvent(db: Queryable, eventId: string): Promise<InboxEvent | null> {
-  const result = await db.query<InboxDbRow>(
-    'SELECT * FROM notion_sync.sync_inbox WHERE event_id = $1',
-    [eventId],
-  );
-  const row = result.rows[0];
-  return row === undefined ? null : mapInboxRow(row);
-}
-
-export async function countInboxByStatus(db: Queryable): Promise<InboxCounts> {
-  const result = await db.query<{ status: InboxStatus; count: string }>(
-    `SELECT status, COUNT(*)::text AS count
-       FROM notion_sync.sync_inbox
-      GROUP BY status`,
-  );
-
-  const counts: Record<InboxStatus, number> = {
-    pending: 0,
-    processing: 0,
-    processed: 0,
-    failed: 0,
-  };
-  for (const row of result.rows) {
-    counts[row.status] = Number(row.count);
+  /**
+   * Settles an event as processed (success) within a transaction.
+   */
+  static async settleEventSuccess(
+    client: pg.PoolClient,
+    eventId: string
+  ): Promise<void> {
+    await client.query(
+      `UPDATE notion_sync.sync_inbox
+          SET status = 'processed',
+              processed_at = NOW(),
+              locked_at = NULL,
+              last_error = NULL
+        WHERE event_id = $1`,
+      [eventId]
+    );
   }
-  return counts;
-}
 
-function mapInboxRow(row: InboxDbRow): InboxEvent {
-  return {
-    eventId: row.event_id,
-    eventType: row.event_type,
-    entityType: row.entity_type,
-    entityId: row.entity_id,
-    eventTimestamp: row.event_timestamp,
-    payload: row.payload,
-    status: row.status,
-    attempts: row.attempts,
-    receivedAt: row.received_at,
-    availableAt: row.available_at,
-    lockedAt: row.locked_at,
-    processedAt: row.processed_at,
-    lastError: row.last_error,
-  };
+  /**
+   * Settles an event as retryable pending with next available_at time and sanitized last_error.
+   */
+  static async settleEventRetryable(
+    db: pg.Pool | pg.PoolClient,
+    eventId: string,
+    availableAt: Date,
+    lastError: string
+  ): Promise<void> {
+    await db.query(
+      `UPDATE notion_sync.sync_inbox
+          SET status = 'pending',
+              available_at = $2,
+              last_error = $3,
+              locked_at = NULL
+        WHERE event_id = $1`,
+      [eventId, availableAt, lastError]
+    );
+  }
+
+  /**
+   * Settles an event as permanently failed.
+   */
+  static async settleEventFailed(
+    db: pg.Pool | pg.PoolClient,
+    eventId: string,
+    lastError: string
+  ): Promise<void> {
+    await db.query(
+      `UPDATE notion_sync.sync_inbox
+          SET status = 'failed',
+              last_error = $2,
+              locked_at = NULL
+        WHERE event_id = $1`,
+      [eventId, lastError]
+    );
+  }
+
+  /**
+   * Resets expired processing leases back to pending.
+   */
+  static async recoverStuckEvents(
+    db: pg.Pool | pg.PoolClient,
+    leaseSeconds = 300
+  ): Promise<number> {
+    const res = await db.query(
+      `UPDATE notion_sync.sync_inbox
+          SET status = 'pending',
+              locked_at = NULL,
+              available_at = NOW()
+        WHERE status = 'processing'
+          AND locked_at < NOW() - ($1 || ' seconds')::interval`,
+      [leaseSeconds]
+    );
+    return res.rowCount ?? 0;
+  }
+
+  /**
+   * Operator requeue: failed -> pending, attempts reset to 0.
+   */
+  static async retryFailedEvents(
+    db: pg.Pool | pg.PoolClient,
+    limit = 100
+  ): Promise<number> {
+    const res = await db.query(
+      `UPDATE notion_sync.sync_inbox
+          SET status = 'pending',
+              attempts = 0,
+              available_at = NOW()
+        WHERE event_id IN (
+          SELECT event_id FROM notion_sync.sync_inbox
+           WHERE status = 'failed'
+           LIMIT $1
+        )`,
+      [limit]
+    );
+    return res.rowCount ?? 0;
+  }
 }

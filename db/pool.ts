@@ -1,51 +1,68 @@
-import { Pool, type PoolConfig } from 'pg';
+import pg from "pg";
+import { getConfig } from "../src/config.js";
+import { DatabaseError } from "../src/errors.js";
 
-// DATE (OID 1082) is a calendar date. Keep it as `YYYY-MM-DD`; never let a
-// timezone turn 2026-10-21 into 2026-10-20.
-import { types } from 'pg';
+const { Pool } = pg;
 
-types.setTypeParser(types.builtins.DATE, (value: string) => value);
+let defaultPool: pg.Pool | null = null;
 
-const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+export function getPool(connectionString?: string): pg.Pool {
+  if (connectionString) {
+    return createPool(connectionString);
+  }
 
-export interface PoolOptions {
-  readonly max?: number;
-  readonly idleTimeoutMillis?: number;
-  readonly connectionTimeoutMillis?: number;
-  readonly statementTimeoutMillis?: number;
+  if (!defaultPool) {
+    const config = getConfig();
+    defaultPool = createPool(config.DATABASE_URL);
+  }
+
+  return defaultPool;
 }
 
-/**
- * Build the runtime connection pool. TLS is enabled for every non-local host
- * unless the URL explicitly disables it; certificates are verified.
- */
-export function poolConfigFromUrl(connectionString: string, options: PoolOptions = {}): PoolConfig {
-  const url = new URL(connectionString);
-  const local = LOCAL_HOSTS.has(url.hostname);
-  const sslMode = url.searchParams.get('sslmode');
-  const verifySsl = !local && sslMode !== 'disable' && sslMode !== 'no-verify';
+export function createPool(connectionString: string): pg.Pool {
+  const isSsl = connectionString.includes("sslmode=require") ||
+    (!connectionString.includes("localhost") && !connectionString.includes("127.0.0.1"));
 
-  return {
+  return new Pool({
     connectionString,
-    max: options.max ?? 10,
-    idleTimeoutMillis: options.idleTimeoutMillis ?? 30_000,
-    connectionTimeoutMillis: options.connectionTimeoutMillis ?? 10_000,
-    statement_timeout: options.statementTimeoutMillis ?? 30_000,
-    application_name: 'notion-tasks-sync',
-    ...(verifySsl ? { ssl: { rejectUnauthorized: true } } : {}),
-  };
+    ssl: isSsl ? { rejectUnauthorized: false } : undefined,
+    max: 10,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 5000,
+  });
 }
 
-export function createPool(connectionString: string, options: PoolOptions = {}): Pool {
-  return new Pool(poolConfigFromUrl(connectionString, options));
+export async function closePool(pool?: pg.Pool): Promise<void> {
+  if (pool) {
+    await pool.end();
+  } else if (defaultPool) {
+    await defaultPool.end();
+    defaultPool = null;
+  }
 }
 
-/** Readiness probe: succeeds only if a round-trip to PostgreSQL succeeds. */
-export async function checkPool(pool: Pool): Promise<void> {
-  await pool.query('SELECT 1');
-}
-
-/** Migrations may legitimately run longer than runtime statements. */
-export function createMigrationPool(connectionString: string): Pool {
-  return createPool(connectionString, { max: 2, statementTimeoutMillis: 300_000 });
+export async function withTransaction<T>(
+  pool: pg.Pool,
+  fn: (client: pg.PoolClient) => Promise<T>
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // Ignore rollback failure if already closed
+    }
+    const pgErr = err as { code?: string; message?: string };
+    throw new DatabaseError(`Transaction failed: ${pgErr.message ?? String(err)}`, {
+      pgCode: pgErr.code,
+      cause: err,
+    });
+  } finally {
+    client.release();
+  }
 }

@@ -1,33 +1,28 @@
 {
   "compilerOptions": {
-    "target": "ES2023",
-    "lib": ["ES2023"],
+    "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "rootDir": ".",
+    "lib": ["ES2022"],
     "outDir": "dist",
+    "rootDir": ".",
     "strict": true,
     "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-    "noFallthroughCasesInSwitch": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "verbatimModuleSyntax": true,
-    "isolatedModules": true,
     "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
-    "resolveJsonModule": true,
-    "sourceMap": true,
-    "types": ["node"]
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true
   },
   "include": [
-    "src/**/*.ts",
-    "db/**/*.ts",
-    "sync/**/*.ts",
-    "routes/**/*.ts",
-    "scripts/**/*.ts",
-    "tests/**/*.ts",
-    "vitest.config.ts"
+    "src/**/*",
+    "db/**/*",
+    "sync/**/*",
+    "routes/**/*",
+    "scripts/**/*",
+    "tests/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
   ]
 }

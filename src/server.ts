@@ -1,89 +1,84 @@
-import { buildApp } from './app.js';
-import { loadConfig, type AppConfig } from './config.js';
-import { createLogger, type Logger } from './logger.js';
-import { sanitizeError } from './redact.js';
-import { checkPool, createPool } from '../db/pool.js';
+import Fastify from "fastify";
+import pg from "pg";
+import { AppConfig, getConfig } from "./config.js";
+import { logger } from "./logger.js";
+import { healthRoutes } from "../routes/health.js";
+import { webhookRoutes } from "../routes/webhooks.js";
+import { getPool } from "../db/pool.js";
 
-/**
- * Process entrypoint. Startup validation order is fixed:
- *   config → database probe → HTTP listener.
- * Phase 3 adds Notion reachability + data-source identity to this sequence.
- */
-async function main(): Promise<void> {
-  let config: AppConfig;
-  try {
-    config = loadConfig();
-  } catch (error) {
-    process.stderr.write(`Startup configuration error: ${sanitizeError(error)}\n`);
-    process.exitCode = 1;
-    return;
+declare module "fastify" {
+  interface FastifyRequest {
+    rawBody?: Buffer;
   }
+}
 
-  const logger = createLogger(config);
-  const pool = createPool(config.database.url);
+export interface ServerOptions {
+  config?: AppConfig;
+  pool?: pg.Pool;
+  checkDbReady?: () => Promise<boolean>;
+}
 
-  try {
-    await checkPool(pool);
-  } catch (error) {
-    if (!config.testMode) {
-      logger.fatal(
-        { event: 'startup.db_unreachable', error: sanitizeError(error) },
-        'PostgreSQL is not reachable; refusing to start',
-      );
-      await pool.end();
-      process.exitCode = 1;
-      return;
-    }
-    logger.warn(
-      { event: 'startup.db_unreachable_test_mode', error: sanitizeError(error) },
-      'PostgreSQL unavailable in explicit test mode; starting with /ready reporting db',
-    );
-  }
+export function buildServer(options: ServerOptions = {}) {
+  const config = options.config ?? getConfig();
 
-  const app = await buildApp({
-    config,
-    logger,
-    checkDatabase: () => checkPool(pool),
+  const app = Fastify({
+    loggerInstance: logger,
+    disableRequestLogging: config.NODE_ENV === "test",
+    bodyLimit: 256 * 1024, // 256 KiB limit per SPEC §8.3
   });
 
-  await installShutdownHandlers(app, pool, logger);
+  // Custom parser for application/json that retains raw Buffer for signature verification
+  app.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, body, done) => {
+    try {
+      const raw = Buffer.isBuffer(body) ? body : Buffer.from(body);
+      req.rawBody = raw;
+      if (!raw || raw.length === 0) {
+        done(null, {});
+        return;
+      }
+      const parsed = JSON.parse(raw.toString("utf-8"));
+      done(null, parsed);
+    } catch (err) {
+      done(err as Error, undefined);
+    }
+  });
 
+  // Register routes
+  app.register(healthRoutes, { checkDbReady: options.checkDbReady });
+  app.register(webhookRoutes, { pool: options.pool, config });
+
+  return app;
+}
+
+// Start server if run directly
+async function start() {
   try {
-    await app.listen({ port: config.port, host: '0.0.0.0' });
-  } catch (error) {
-    logger.fatal({ event: 'startup.listen_failed', error: sanitizeError(error) });
-    await pool.end();
-    process.exitCode = 1;
+    const config = getConfig();
+    const pool = getPool();
+    const server = buildServer({
+      config,
+      pool,
+      checkDbReady: async () => {
+        try {
+          await pool.query("SELECT 1");
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    });
+
+    const address = await server.listen({
+      port: config.PORT,
+      host: "0.0.0.0",
+    });
+    logger.info({ address }, "Notion to PostgreSQL sync server listening");
+  } catch (err) {
+    logger.fatal({ err }, "Failed to start server");
+    process.exit(1);
   }
 }
 
-async function installShutdownHandlers(
-  app: Awaited<ReturnType<typeof buildApp>>,
-  pool: ReturnType<typeof createPool>,
-  logger: Logger,
-): Promise<void> {
-  let shuttingDown = false;
-
-  const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
-    if (shuttingDown) {
-      return;
-    }
-    shuttingDown = true;
-    logger.info({ event: 'server.shutdown', signal }, 'shutting down');
-    const force = setTimeout(() => process.exit(1), 15_000);
-    force.unref();
-    try {
-      await app.close();
-      await pool.end();
-      process.exit(0);
-    } catch (error) {
-      logger.error({ event: 'server.shutdown_failed', error: sanitizeError(error) });
-      process.exit(1);
-    }
-  };
-
-  process.once('SIGINT', () => void shutdown('SIGINT'));
-  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, "/"))) {
+  start();
 }
-
-void main();

@@ -1,56 +1,29 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyPluginAsync } from "fastify";
 
-import { validateBaseEnv, type AppConfig } from '../src/config.js';
-
-export interface HealthDeps {
-  readonly config: AppConfig;
-  readonly checkDatabase: () => Promise<void>;
+export interface HealthRouteOptions {
+  checkDbReady?: () => Promise<boolean>;
 }
 
-const READINESS_TIMEOUT_MS = 1_000;
+export const healthRoutes: FastifyPluginAsync<HealthRouteOptions> = async (fastify, opts) => {
+  fastify.get("/health", async (_request, reply) => {
+    return reply.status(200).send({ status: "ok" });
+  });
 
-/**
- * Liveness answers "is this process running"; readiness answers "can it do
- * useful work". Neither exposes versions, hostnames, counts or error text.
- */
-export async function healthRoutes(
-  app: FastifyInstance,
-  options: { readonly deps: HealthDeps },
-): Promise<void> {
-  const { config, checkDatabase } = options.deps;
-  const startedAt = Date.now();
-
-  app.get('/health', async () => ({
-    status: 'ok',
-    uptime_s: Math.max(0, Math.floor((Date.now() - startedAt) / 1000)),
-  }));
-
-  app.get('/ready', async (_request, reply) => {
-    if (validateBaseEnv(config).length > 0) {
-      return reply.code(503).send({ ready: false, reason: 'config' });
-    }
-
+  fastify.get("/ready", async (_request, reply) => {
     try {
-      await withTimeout(checkDatabase(), READINESS_TIMEOUT_MS);
-      return reply.code(200).send({ ready: true });
+      if (opts.checkDbReady) {
+        const isDbReady = await opts.checkDbReady();
+        if (!isDbReady) {
+          return reply.status(503).send({ status: "not_ready", reason: "database_unavailable" });
+        }
+      }
+
+      return reply.status(200).send({
+        status: "ready",
+        timestamp: new Date().toISOString(),
+      });
     } catch {
-      return reply.code(503).send({ ready: false, reason: 'db' });
+      return reply.status(503).send({ status: "not_ready", reason: "database_check_failed" });
     }
   });
-}
-
-async function withTimeout(promise: Promise<void>, timeoutMs: number): Promise<void> {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    await Promise.race([
-      promise,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('readiness probe timed out')), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) {
-      clearTimeout(timer);
-    }
-  }
-}
+};

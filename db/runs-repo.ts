@@ -1,35 +1,10 @@
-/**
- * Operational run ledger. A run is never deleted or rewritten into a success:
- * interrupted imports stay visible as `partial`/`failed` with the cursor at
- * which they stopped.
- */
+import pg from "pg";
 
-import type { Queryable } from './queryable.js';
+export type RunType = "initial_backfill" | "reconciliation" | "manual_retry";
+export type RunStatus = "running" | "succeeded" | "partial" | "failed";
 
-export type RunType = 'initial_backfill' | 'reconciliation' | 'manual_retry';
-export type RunStatus = 'running' | 'succeeded' | 'partial' | 'failed';
-export type TerminalRunStatus = Exclude<RunStatus, 'running'>;
-
-export interface SyncRun {
-  readonly runId: number;
-  readonly runType: RunType;
-  readonly status: RunStatus;
-  readonly startedAt: Date;
-  readonly finishedAt: Date | null;
-  readonly recordsProcessed: number;
-  readonly errorMessage: string | null;
-  readonly cursorReached: string | null;
-}
-
-export interface FinishRunOptions {
-  readonly status: TerminalRunStatus;
-  readonly recordsProcessed?: number;
-  readonly errorMessage?: string | null;
-  readonly cursorReached?: string | null;
-}
-
-interface RunDbRow {
-  run_id: string;
+export interface SyncRunRecord {
+  run_id: number;
   run_type: RunType;
   status: RunStatus;
   started_at: Date;
@@ -39,74 +14,60 @@ interface RunDbRow {
   cursor_reached: string | null;
 }
 
-export async function startRun(db: Queryable, runType: RunType): Promise<SyncRun> {
-  const result = await db.query<RunDbRow>(
-    `INSERT INTO notion_sync.sync_runs (run_type, status)
-     VALUES ($1, 'running')
-     RETURNING *`,
-    [runType],
-  );
-  const row = result.rows[0];
-  if (row === undefined) {
-    throw new Error('sync_runs insert returned no row');
+export class RunsRepository {
+  /**
+   * Starts a new operational sync run.
+   */
+  static async startRun(
+    db: pg.Pool | pg.PoolClient,
+    runType: RunType
+  ): Promise<number> {
+    const res = await db.query<{ run_id: string }>(
+      `INSERT INTO notion_sync.sync_runs (run_type, status, started_at)
+       VALUES ($1, 'running', NOW())
+       RETURNING run_id`,
+      [runType]
+    );
+
+    return Number(res.rows[0]?.run_id);
   }
-  return mapRunRow(row);
-}
 
-export async function finishRun(
-  db: Queryable,
-  runId: number,
-  options: FinishRunOptions,
-): Promise<boolean> {
-  const result = await db.query(
-    `UPDATE notion_sync.sync_runs
-        SET status = $2,
-            finished_at = NOW(),
-            records_processed = $3,
-            error_message = $4,
-            cursor_reached = $5
-      WHERE run_id = $1`,
-    [
-      runId,
-      options.status,
-      options.recordsProcessed ?? 0,
-      options.errorMessage ?? null,
-      options.cursorReached ?? null,
-    ],
-  );
-  return (result.rowCount ?? 0) > 0;
-}
+  /**
+   * Records the finish status and metrics of a sync run.
+   */
+  static async finishRun(
+    db: pg.Pool | pg.PoolClient,
+    runId: number,
+    status: RunStatus,
+    recordsProcessed: number,
+    errorMessage?: string | null,
+    cursorReached?: string | null
+  ): Promise<void> {
+    await db.query(
+      `UPDATE notion_sync.sync_runs
+          SET status = $2,
+              finished_at = NOW(),
+              records_processed = $3,
+              error_message = $4,
+              cursor_reached = $5
+        WHERE run_id = $1`,
+      [runId, status, recordsProcessed, errorMessage ?? null, cursorReached ?? null]
+    );
+  }
 
-export async function getRun(db: Queryable, runId: number): Promise<SyncRun | null> {
-  const result = await db.query<RunDbRow>(
-    'SELECT * FROM notion_sync.sync_runs WHERE run_id = $1',
-    [runId],
-  );
-  const row = result.rows[0];
-  return row === undefined ? null : mapRunRow(row);
-}
+  /**
+   * Retrieves the most recent run for a specific run type.
+   */
+  static async getLatestRun(
+    db: pg.Pool | pg.PoolClient,
+    runType?: RunType
+  ): Promise<SyncRunRecord | null> {
+    const query = runType
+      ? "SELECT * FROM notion_sync.sync_runs WHERE run_type = $1 ORDER BY started_at DESC LIMIT 1"
+      : "SELECT * FROM notion_sync.sync_runs ORDER BY started_at DESC LIMIT 1";
+    const values = runType ? [runType] : [];
 
-export async function getLatestRun(db: Queryable, runType: RunType): Promise<SyncRun | null> {
-  const result = await db.query<RunDbRow>(
-    `SELECT * FROM notion_sync.sync_runs
-      WHERE run_type = $1
-      ORDER BY started_at DESC
-      LIMIT 1`,
-    [runType],
-  );
-  const row = result.rows[0];
-  return row === undefined ? null : mapRunRow(row);
-}
-
-function mapRunRow(row: RunDbRow): SyncRun {
-  return {
-    runId: Number(row.run_id),
-    runType: row.run_type,
-    status: row.status,
-    startedAt: row.started_at,
-    finishedAt: row.finished_at,
-    recordsProcessed: row.records_processed,
-    errorMessage: row.error_message,
-    cursorReached: row.cursor_reached,
-  };
+    const res = await db.query<SyncRunRecord>(query, values);
+    return res.rows[0] ?? null;
+  }
 }
