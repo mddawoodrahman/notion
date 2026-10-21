@@ -1,0 +1,86 @@
+# Me.md — Developer & Project Context
+
+**Developer / Owner:** Dawood Rahman ([@mddawoodrahman](https://github.com/mddawoodrahman))  
+**Project:** Notion Tasks → PostgreSQL Synchronization Service (`notion-tasks-pg-sync`)  
+**Repository:** [github.com/mddawoodrahman/notion](https://github.com/mddawoodrahman/notion)  
+**Primary Stack:** Node.js (v22+ LTS), TypeScript 5 (Strict ESM), PostgreSQL (Neon), Fastify 5, Notion SDK (`@notionhq/client`), Zod 3, Vitest, Pino  
+
+---
+
+## 1. Project Purpose & Philosophy
+
+This project is a high-reliability, one-way synchronization engine that bridges my Microsoft To Do–inspired Notion task database to a dedicated PostgreSQL database on Neon. 
+
+- **Single System of Record:** Notion is the only interface where I create, edit, complete, categorize, and archive tasks. PostgreSQL is a queryable, current-state replica for future backend systems and automations.
+- **Pragmatic & Invariant-Driven:** I value simple, robust architectures with clear operational boundaries over unnecessary layers of abstraction, bloated ORMs, or premature feature creep.
+- **Verification First:** No code is complete without type-safety, parameterized queries, and verifiable test coverage. Evidence precedes assertions.
+
+---
+
+## 2. Core Architectural Invariants (Non-Negotiable)
+
+Any tool, agent, or developer working on this codebase must preserve these rules:
+
+1. **INV-1 (Stable Identity):** Exactly one PostgreSQL row per Notion page UUID (`notion_page_id`). No linked view, repeat sync, or backfill creates duplicates.
+2. **INV-2 (Authoritative State):** Webhook payloads are lightweight change signals, never the complete record. The worker must fetch the fresh Notion page object before synchronizing.
+3. **INV-3 (Durable Ingestion):** Webhook requests are acknowledged (`200 OK`) only after being committed to `notion_sync.sync_inbox`. If PostgreSQL is unreachable, return `503` so Notion retries.
+4. **INV-4 (No Regression):** Upserts guard against out-of-order webhook deliveries using `notion_last_edited_time`. An older snapshot will never overwrite a newer record.
+5. **INV-5 (Safe Scans):** Absence from a reconciliation scan never implies deletion. Tombstoning (`notion_in_trash = true` or `is_in_source = false`) requires positive evidence or a 100% complete scan with zero page failures.
+6. **INV-6 (Transactional Integrity):** Task row upsert and inbox status transition (`processed`) must occur within the same PostgreSQL transaction.
+7. **INV-7 (Absolute Secret Redaction):** No Notion API tokens, database connection passwords, or webhook verification tokens may appear in logs, error traces, or source control.
+
+---
+
+## 3. Strict Project Boundaries (V1 Scope Exclusions)
+
+Do not add the following to V1:
+- **No Productivity Analytics / Dashboards:** No charts, KPI calculators, summary views, or SQL reports.
+- **No Python / Pandas / BI / AI Insights:** No ML models or background AI summarizers.
+- **No Event History Tables:** Do not create `task_events` or `daily_task_snapshots`.
+- **No Bidirectional Editing:** Never write task changes from PostgreSQL back into Notion.
+- **No Binary Storage:** Do not download or store Notion attachment binaries.
+
+---
+
+## 4. How I Work & Agent Instructions
+
+When interacting with this codebase:
+- **Be direct and concise:** Skip fluff and conversational overhead. Deliver concrete code, clear explanations, and verified test results.
+- **Audit before touching:** Inspect existing files, configuration, and migrations before modifying anything.
+- **Test with evidence:** Always run `npm test` and `npm run typecheck` before presenting work as complete.
+- **Fail safely:** If credentials or environment variables are missing, write mocked unit tests and clearly report the blocker without inventing credentials.
+- **Keep `.env` clean:** Placeholders belong in `.env.example`. Real secrets belong only in environment variables or host secret managers.
+
+---
+
+## 5. Daily Commands & Workflow Reference
+
+```bash
+# Quality & Verification
+npm test                    # Run all Vitest unit and E2E suites
+npm run typecheck           # Full TypeScript check (tsc --noEmit)
+npm run build               # Compile TypeScript into dist/
+
+# Services
+npm start                   # Start Fastify HTTP Webhook & Health API
+npm run worker              # Start background sync worker loop
+
+# Operations & Database
+npm run db:migrate          # Apply schema migrations (direct connection)
+npm run db:migrate -- status # Inspect applied vs pending migrations
+npm run sync:backfill       # Run paginated initial backfill
+npm run sync:backfill -- --dry-run # Backfill dry-run (fetch + normalize only)
+npm run sync:reconcile      # Run scheduled full reconciliation scan
+npm run sync:retry-failed   # Requeue failed webhook events back to pending
+npm run sync:recover-stuck  # Reset expired worker processing leases
+```
+
+---
+
+## 6. Project Documentation Index
+
+- [`docs/PRD.md`](./docs/PRD.md): Official product requirements and data model.
+- [`docs/Notion_to_PostgreSQL_Sync_SPEC.md`](./docs/Notion_to_PostgreSQL_Sync_SPEC.md): Complete engineering contracts and algorithms.
+- [`docs/implementation-workflow.md`](./docs/implementation-workflow.md): Phased implementation protocol and quality gates.
+- [`docs/IMPLEMENTATION_STATUS.md`](./docs/IMPLEMENTATION_STATUS.md): Current implementation progress and verification evidence.
+- [`docs/DEPLOYMENT_GUIDE.md`](./docs/DEPLOYMENT_GUIDE.md): Production deployment, secret configuration, and operational playbooks.
