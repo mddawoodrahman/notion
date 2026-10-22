@@ -96,10 +96,10 @@ export class InboxRepository {
    * Settles an event as processed (success) within a transaction.
    */
   static async settleEventSuccess(
-    client: pg.PoolClient,
+    db: pg.Pool | pg.PoolClient,
     eventId: string
   ): Promise<void> {
-    await client.query(
+    await db.query(
       `UPDATE notion_sync.sync_inbox
           SET status = 'processed',
               processed_at = NOW(),

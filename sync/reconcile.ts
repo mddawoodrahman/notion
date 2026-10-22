@@ -21,6 +21,9 @@ export interface ReconcileResult {
   status: RunStatus;
   remediatedOutdated: number;
   dataSourceId: string;
+  /** True when Notion reported the query result set is incomplete (e.g. 10k cap). */
+  isIncomplete: boolean;
+  incompleteReason: string | null;
 }
 
 /**
@@ -51,6 +54,8 @@ export async function runReconciliation(options: ReconcileOptions): Promise<Reco
   let cursor: string | undefined = undefined;
   let hasMore = true;
   let scanComplete = false;
+  let isIncomplete = false;
+  let incompleteReason: string | null = null;
   let remediatedOutdated = 0;
   let finalStatus: RunStatus = "succeeded";
   let lastErrorMessage: string | null = null;
@@ -69,6 +74,17 @@ export async function runReconciliation(options: ReconcileOptions): Promise<Reco
         startCursor: cursor,
         pageSize: config.SYNC_PAGE_SIZE,
       });
+
+      // BUG-002: Notion sets request_status=incomplete (e.g. query_result_limit_reached)
+      // when it silently caps a query at 10,000 results and reports has_more=false.
+      if (response.is_incomplete) {
+        isIncomplete = true;
+        incompleteReason = response.incomplete_reason ?? "query_result_limit_reached";
+        logger.warn(
+          { dataSourceId, cursor, incompleteReason },
+          "Notion reported an incomplete query result set during reconciliation"
+        );
+      }
 
       for (const page of response.results) {
         if (!page?.id) continue;
@@ -100,11 +116,16 @@ export async function runReconciliation(options: ReconcileOptions): Promise<Reco
 
     scanComplete = true;
 
-    // INV-5: Only compare out-of-scope pages if scan was completely successful with 0 page failures
-    if (!scanComplete || pageFailures > 0) {
-      finalStatus = recordsProcessed > 0 ? "partial" : "failed";
+    // INV-5 + BUG-002: remediation requires a provably complete, uncapped, error-free scan.
+    if (!scanComplete || isIncomplete || pageFailures > 0) {
+      finalStatus = recordsProcessed > 0 || isIncomplete ? "partial" : "failed";
+      if (!lastErrorMessage) {
+        lastErrorMessage = isIncomplete
+          ? `Notion query returned an incomplete result set (${incompleteReason ?? "unknown reason"}); out-of-source remediation skipped`
+          : `Scan completed with ${pageFailures} page failure(s); out-of-source remediation skipped`;
+      }
       logger.warn(
-        { recordsProcessed, pageFailures },
+        { recordsProcessed, pageFailures, isIncomplete, incompleteReason },
         "Reconciliation was partial. Skipping out-of-source remediation to protect existing tasks (INV-5)"
       );
     } else {
@@ -138,7 +159,7 @@ export async function runReconciliation(options: ReconcileOptions): Promise<Reco
   }
 
   logger.info(
-    { runId, recordsProcessed, pageFailures, remediatedOutdated, status: finalStatus },
+    { runId, recordsProcessed, pageFailures, remediatedOutdated, status: finalStatus, isIncomplete },
     "Reconciliation completed"
   );
 
@@ -149,5 +170,7 @@ export async function runReconciliation(options: ReconcileOptions): Promise<Reco
     status: finalStatus,
     remediatedOutdated,
     dataSourceId,
+    isIncomplete,
+    incompleteReason,
   };
 }

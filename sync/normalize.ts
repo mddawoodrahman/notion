@@ -19,7 +19,11 @@ export interface NormalizedTaskRecord {
   notion_created_time: string | null;
   notion_last_edited_time: string | null;
   raw_properties: Record<string, unknown>;
-  page_content_json: unknown[];
+  /**
+   * Fetched block children, or `null` when body content was not fetched at all
+   * (BUG-004: `null` means "preserve existing stored content", `[]` means "genuinely empty").
+   */
+  page_content_json: unknown[] | null;
   synced_at: string;
 }
 
@@ -29,6 +33,27 @@ export interface NormalizeOptions {
   timezone?: string;
   propertyMap?: PropertyNameMapping;
   bodyBlocks?: unknown[];
+}
+
+const DEFAULT_TIMEZONE = "Asia/Kolkata";
+const dateFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/**
+ * Formats an instant as `YYYY-MM-DD` in the given IANA time zone.
+ * The `en-CA` locale renders ISO-style dates, so no manual padding is needed.
+ */
+function formatDateInTimeZone(date: Date, timeZone: string): string {
+  let formatter = dateFormatters.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    dateFormatters.set(timeZone, formatter);
+  }
+  return formatter.format(date);
 }
 
 /**
@@ -119,15 +144,19 @@ export function normalizePage(page: any, options: NormalizeOptions = {}): Normal
     if (val.type === "date" && val.date && val.date.start) {
       const rawStart: string = val.date.start;
       if (rawStart.includes("T")) {
-        // Timed instant
+        // Timed instant: keep the UTC instant, derive the calendar date in the configured zone (DOC-001)
         const dateObj = new Date(rawStart);
         if (!Number.isNaN(dateObj.getTime())) {
           dueAt = dateObj.toISOString();
-          // Extract date-only portion in target timezone or UTC
-          dueDate = rawStart.split("T")[0] ?? null;
+          try {
+            dueDate = formatDateInTimeZone(dateObj, options.timezone ?? DEFAULT_TIMEZONE);
+          } catch {
+            // Unknown/invalid time zone: fall back to the literal date portion
+            dueDate = rawStart.split("T")[0] ?? null;
+          }
         }
       } else {
-        // Date-only (YYYY-MM-DD)
+        // Date-only (YYYY-MM-DD): a calendar date has no time zone, keep it verbatim
         dueDate = rawStart;
         dueAt = null;
       }
@@ -196,7 +225,8 @@ export function normalizePage(page: any, options: NormalizeOptions = {}): Normal
     notion_created_time: page.created_time ? new Date(page.created_time).toISOString() : null,
     notion_last_edited_time: page.last_edited_time ? new Date(page.last_edited_time).toISOString() : null,
     raw_properties: properties,
-    page_content_json: options.bodyBlocks ?? [],
+    // BUG-004: `null` = "not fetched" (preserve stored content), `[]` = genuinely empty page
+    page_content_json: Array.isArray(options.bodyBlocks) ? options.bodyBlocks : null,
     synced_at: new Date().toISOString(),
   };
 }

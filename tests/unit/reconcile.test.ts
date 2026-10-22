@@ -106,4 +106,61 @@ describe("Reconciliation and Operations (INV-5 Protection)", () => {
     startRunSpy.mockRestore();
     finishRunSpy.mockRestore();
   });
+
+  it("incomplete Notion query result set (10k cap) records partial and NEVER remediates (BUG-002, INV-5)", async () => {
+    const mockClient = {
+      resolveDataSource: vi.fn().mockResolvedValue("ds_rec_1"),
+      queryDataSourcePages: vi.fn().mockResolvedValue({
+        // Notion reports has_more=false while silently capping the query at 10,000 results
+        results: [{ id: "page_active_1" }],
+        next_cursor: null,
+        has_more: false,
+        is_incomplete: true,
+        incomplete_reason: "query_result_limit_reached",
+      }),
+      fetchPage: vi.fn().mockImplementation(async (id: string) => ({
+        id,
+        properties: { Task: { type: "title", title: [{ plain_text: `Task ${id}` }] } },
+      })),
+    } as any;
+
+    const upsertSpy = vi.spyOn(TasksRepository, "upsertTask").mockResolvedValue({} as any);
+    const outOfSourceSpy = vi.spyOn(TasksRepository, "markTasksOutOfSource");
+    const startRunSpy = vi.spyOn(RunsRepository, "startRun").mockResolvedValue(203);
+    const finishRunSpy = vi.spyOn(RunsRepository, "finishRun").mockResolvedValue();
+
+    const mockPool = {} as any;
+
+    try {
+      const result = await runReconciliation({
+        client: mockClient,
+        pool: mockPool,
+        config: testConfig,
+        dryRun: false,
+      });
+
+      expect(result.status).toBe("partial");
+      expect(result.isIncomplete).toBe(true);
+      expect(result.incompleteReason).toBe("query_result_limit_reached");
+      expect(result.recordsProcessed).toBe(1);
+      expect(upsertSpy).toHaveBeenCalledTimes(1);
+
+      // Crucial invariant: a capped scan proves nothing about vanished pages
+      expect(outOfSourceSpy).not.toHaveBeenCalled();
+
+      expect(finishRunSpy).toHaveBeenCalledWith(
+        mockPool,
+        203,
+        "partial",
+        1,
+        expect.stringContaining("query_result_limit_reached"),
+        undefined
+      );
+    } finally {
+      upsertSpy.mockRestore();
+      outOfSourceSpy.mockRestore();
+      startRunSpy.mockRestore();
+      finishRunSpy.mockRestore();
+    }
+  });
 });

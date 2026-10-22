@@ -203,4 +203,70 @@ describe("Secure Webhook Receiver and Durable Inbox", () => {
 
     enqueueSpy.mockRestore();
   });
+
+  const unsignedDevelopmentConfig = (overrides: Record<string, string> = {}) =>
+    validateConfig({
+      NODE_ENV: "development",
+      NOTION_API_KEY: "secret_dev_placeholder_1234567890",
+      NOTION_DATABASE_ID: "11111111-1111-1111-1111-111111111111",
+      DATABASE_URL: "postgresql://user:pass@localhost:5432/devdb",
+      ...overrides,
+    });
+
+  it("fails closed with 503 and stores nothing when no verification token is configured (SEC-001)", async () => {
+    const enqueueSpy = vi.spyOn(InboxRepository, "enqueueEvent");
+    const unsignedApp = buildServer({ config: unsignedDevelopmentConfig(), pool: mockPool });
+
+    try {
+      expect(unsignedDevelopmentConfig().NODE_ENV).toBe("development");
+
+      const res = await unsignedApp.inject({
+        method: "POST",
+        url: "/webhooks/notion",
+        payload: {
+          id: "evt_unsigned_1",
+          type: "page.created",
+          entity: { type: "page", id: "page_unsigned_1" },
+        },
+      });
+
+      expect(res.statusCode).toBe(503);
+      expect(res.json()).toEqual({ ok: false });
+      expect(enqueueSpy).not.toHaveBeenCalled(); // zero inbox rows
+    } finally {
+      await unsignedApp.close();
+      enqueueSpy.mockRestore();
+    }
+  });
+
+  it("accepts unsigned deliveries only with the explicit ALLOW_UNSIGNED_WEBHOOKS=true opt-in (SEC-001)", async () => {
+    const enqueueSpy = vi.spyOn(InboxRepository, "enqueueEvent").mockResolvedValue({
+      isDuplicate: false,
+      eventId: "evt_unsigned_ok",
+    });
+
+    const config = unsignedDevelopmentConfig({ ALLOW_UNSIGNED_WEBHOOKS: "true" });
+    expect(config.ALLOW_UNSIGNED_WEBHOOKS).toBe(true);
+
+    const unsignedApp = buildServer({ config, pool: mockPool });
+
+    try {
+      const res = await unsignedApp.inject({
+        method: "POST",
+        url: "/webhooks/notion",
+        payload: {
+          id: "evt_unsigned_ok",
+          type: "page.created",
+          entity: { type: "page", id: "page_unsigned_ok" },
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ ok: true });
+      expect(enqueueSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      await unsignedApp.close();
+      enqueueSpy.mockRestore();
+    }
+  });
 });

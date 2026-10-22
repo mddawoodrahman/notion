@@ -48,6 +48,14 @@ describe("Idempotent Repository SQL and Query Logic", () => {
     expect(capturedQuery).toContain("ON CONFLICT (notion_page_id) DO UPDATE SET");
     expect(capturedQuery).toContain("EXCLUDED.notion_last_edited_time >= notion_sync.notion_tasks.notion_last_edited_time");
 
+    // BUG-004: null incoming content must never wipe stored content
+    expect(capturedQuery).toContain("COALESCE($19::jsonb, '[]'::jsonb)");
+    expect(capturedQuery).toMatch(
+      /page_content_json\s*=\s*COALESCE\(\$19::jsonb,\s*notion_sync\.notion_tasks\.page_content_json\)/
+    );
+    // BUG-008: a null incoming timestamp must not be an unconditional overwrite
+    expect(capturedQuery).not.toContain("OR EXCLUDED.notion_last_edited_time IS NULL");
+
     // Verify 19 parameterized values
     expect(capturedValues.length).toBe(19);
     expect(capturedValues[0]).toBe("test-page-1234");
@@ -56,6 +64,23 @@ describe("Idempotent Repository SQL and Query Logic", () => {
     expect(capturedValues[4]).toBe(true); // important
     expect(capturedValues[17]).toBe(JSON.stringify({ foo: "bar" })); // raw_properties JSON
     expect(capturedValues[18]).toBe(JSON.stringify([{ type: "paragraph" }])); // page_content_json JSON
+  });
+
+  it("passes SQL null for un-fetched page content so COALESCE can preserve stored content (BUG-004)", async () => {
+    let capturedValues: any[] = [];
+
+    const mockDb = {
+      query: vi.fn().mockImplementation(async (_query: string, values: any[]) => {
+        capturedValues = values;
+        return { rows: [sampleTask], rowCount: 1 };
+      }),
+    } as any;
+
+    await TasksRepository.upsertTask(mockDb, { ...sampleTask, page_content_json: null });
+    expect(capturedValues[18]).toBeNull();
+
+    await TasksRepository.upsertTask(mockDb, { ...sampleTask, page_content_json: [] });
+    expect(capturedValues[18]).toBe("[]");
   });
 
   it("enqueueEvent detects duplicates idempotently using ON CONFLICT (event_id) DO NOTHING", async () => {

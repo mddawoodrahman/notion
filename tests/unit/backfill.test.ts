@@ -135,4 +135,53 @@ describe("Initial Backfill Command and Cursor Pagination", () => {
     startRunSpy.mockRestore();
     finishRunSpy.mockRestore();
   });
+
+  it("marks the run partial when Notion reports an incomplete (capped) result set (BUG-002)", async () => {
+    const mockClient = {
+      resolveDataSource: vi.fn().mockResolvedValue("ds_test_123"),
+      queryDataSourcePages: vi.fn().mockResolvedValue({
+        // has_more=false at the 10,000-result cap with request_status=incomplete
+        results: [
+          { id: "page_cap_1", properties: { Task: { type: "title", title: [{ plain_text: "Capped 1" }] } } },
+        ],
+        next_cursor: null,
+        has_more: false,
+        is_incomplete: true,
+        incomplete_reason: "query_result_limit_reached",
+      }),
+    } as any;
+
+    const upsertSpy = vi.spyOn(TasksRepository, "upsertTask").mockResolvedValue({} as any);
+    const startRunSpy = vi.spyOn(RunsRepository, "startRun").mockResolvedValue(103);
+    const finishRunSpy = vi.spyOn(RunsRepository, "finishRun").mockResolvedValue();
+
+    const mockPool = {} as any;
+
+    try {
+      const result = await runBackfill({
+        client: mockClient,
+        pool: mockPool,
+        config: testConfig,
+        dryRun: false,
+      });
+
+      expect(result.status).toBe("partial");
+      expect(result.isIncomplete).toBe(true);
+      expect(result.incompleteReason).toBe("query_result_limit_reached");
+      expect(upsertSpy).toHaveBeenCalledTimes(1);
+
+      expect(finishRunSpy).toHaveBeenCalledWith(
+        mockPool,
+        103,
+        "partial",
+        1,
+        expect.stringContaining("query_result_limit_reached"),
+        undefined
+      );
+    } finally {
+      upsertSpy.mockRestore();
+      startRunSpy.mockRestore();
+      finishRunSpy.mockRestore();
+    }
+  });
 });

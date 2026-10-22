@@ -2,9 +2,10 @@ import pg from "pg";
 import { NotionSyncClient } from "./notion-client.js";
 import { normalizePage } from "./normalize.js";
 import { TasksRepository } from "../db/tasks-repo.js";
-import { InboxRepository, InboxEventRecord } from "../db/inbox-repo.js";
+import { InboxRepository } from "../db/inbox-repo.js";
 import { AppConfig, getConfig } from "../src/config.js";
 import { classifyError } from "../src/errors.js";
+import { withTransaction } from "../db/pool.js";
 import { backoffMs } from "./retry-policy.js";
 import { logger } from "../src/logger.js";
 
@@ -12,6 +13,11 @@ export interface WorkerOptions {
   client: NotionSyncClient;
   pool: pg.Pool;
   config?: AppConfig;
+  /**
+   * BUG-001: cache of the data source id resolved once per worker process, so
+   * `is_in_source` is computed against the real data source (not raw config).
+   */
+  resolvedDataSourceId?: string;
 }
 
 /**
@@ -39,23 +45,12 @@ export async function processNextEvent(options: WorkerOptions): Promise<boolean>
     if (eventType === "page.deleted") {
       // Tombstone without re-fetching from Notion (404 expected on deleted page)
       if (pageId) {
-        const clientConn = await pool.connect();
-        try {
-          await clientConn.query("BEGIN");
+        await withTransaction(pool, async (clientConn) => {
           await TasksRepository.markTaskInTrash(clientConn, pageId);
           await InboxRepository.settleEventSuccess(clientConn, eventId);
-          await clientConn.query("COMMIT");
-        } catch (err) {
-          await clientConn.query("ROLLBACK");
-          throw err;
-        } finally {
-          clientConn.release();
-        }
+        });
       } else {
-        await pool.query(
-          "UPDATE notion_sync.sync_inbox SET status = 'processed', processed_at = NOW() WHERE event_id = $1",
-          [eventId]
-        );
+        await InboxRepository.settleEventSuccess(pool, eventId);
       }
     } else if (
       eventType === "page.created" ||
@@ -71,8 +66,10 @@ export async function processNextEvent(options: WorkerOptions): Promise<boolean>
       // Fetch latest authoritative page record from Notion (INV-2)
       const page = await client.fetchPage(pageId);
 
-      // Fetch blocks if content updated and enabled
-      let bodyBlocks: any[] = [];
+      // Fetch blocks if content updated and enabled.
+      // BUG-004: leave `bodyBlocks` undefined when not fetched or when the fetch fails,
+      // so the upsert preserves any previously stored page_content_json.
+      let bodyBlocks: unknown[] | undefined;
       if (
         (eventType === "page.content_updated" || config.SYNC_SYNC_BODY_CONTENT) &&
         !page.in_trash
@@ -80,40 +77,38 @@ export async function processNextEvent(options: WorkerOptions): Promise<boolean>
         try {
           bodyBlocks = await client.fetchPageBlocks(pageId);
         } catch (blockErr) {
-          logger.warn({ pageId, blockErr }, "Could not fetch updated page body blocks");
+          logger.warn(
+            { pageId, blockErr },
+            "Could not fetch updated page body blocks; preserving stored page content"
+          );
         }
       }
 
+      // BUG-001: resolve the target data source once and reuse it for every page event
+      if (!options.resolvedDataSourceId) {
+        options.resolvedDataSourceId = await client.resolveDataSource(
+          config.NOTION_DATABASE_ID,
+          config.NOTION_DATA_SOURCE_ID
+        );
+      }
+
       const normalized = normalizePage(page, {
-        configuredDataSourceId: config.NOTION_DATA_SOURCE_ID,
+        configuredDataSourceId: options.resolvedDataSourceId,
         configuredDatabaseId: config.NOTION_DATABASE_ID,
         timezone: config.SYNC_TIMEZONE,
         bodyBlocks,
       });
 
       // Atomic commit: upsert task + settle inbox row (INV-6)
-      const clientConn = await pool.connect();
-      try {
-        await clientConn.query("BEGIN");
+      await withTransaction(pool, async (clientConn) => {
         await TasksRepository.upsertTask(clientConn, normalized);
         await InboxRepository.settleEventSuccess(clientConn, eventId);
-        await clientConn.query("COMMIT");
-      } catch (err) {
-        await clientConn.query("ROLLBACK");
-        throw err;
-      } finally {
-        clientConn.release();
-      }
+      });
     } else {
       // Out-of-scope or informational event: acknowledge without mutating tasks
-      const clientConn = await pool.connect();
-      try {
-        await clientConn.query("BEGIN");
+      await withTransaction(pool, async (clientConn) => {
         await InboxRepository.settleEventSuccess(clientConn, eventId);
-        await clientConn.query("COMMIT");
-      } finally {
-        clientConn.release();
-      }
+      });
     }
 
     logger.info({ eventId }, "Worker settled event as processed");

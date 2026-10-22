@@ -4,7 +4,6 @@ import { buildServer } from "../../src/server.js";
 import { validateConfig } from "../../src/config.js";
 import { normalizePage } from "../../sync/normalize.js";
 import { TasksRepository } from "../../db/tasks-repo.js";
-import { InboxRepository } from "../../db/inbox-repo.js";
 import { runBackfill } from "../../sync/backfill.js";
 import { runReconciliation } from "../../sync/reconcile.js";
 import { processNextEvent } from "../../sync/worker.js";
@@ -132,7 +131,12 @@ describe("Phase 10 — End-to-End Acceptance Verification (AT-01 to AT-14)", () 
           notion_created_time: params[15],
           notion_last_edited_time: params[16],
           raw_properties: JSON.parse(params[17]),
-          page_content_json: JSON.parse(params[18]),
+          // Mirrors the SQL COALESCE($19::jsonb, existing) contract (BUG-004):
+          // a null incoming value means "content not fetched", so stored content is preserved.
+          page_content_json:
+            params[18] === null || params[18] === undefined
+              ? existing?.page_content_json ?? []
+              : JSON.parse(params[18]),
           synced_at: new Date(),
         };
 
@@ -242,6 +246,7 @@ describe("Phase 10 — End-to-End Acceptance Verification (AT-01 to AT-14)", () 
 
     // Worker processes event
     const mockWorkerClient = {
+      resolveDataSource: vi.fn().mockResolvedValue("ds_master_tasks"),
       fetchPage: vi.fn().mockResolvedValue({
         id: "task_page_2",
         created_time: "2026-10-21T10:00:00.000Z",
@@ -397,6 +402,7 @@ describe("Phase 10 — End-to-End Acceptance Verification (AT-01 to AT-14)", () 
     });
 
     const mockWorkerClient = {
+      resolveDataSource: vi.fn().mockResolvedValue("ds_master_tasks"),
       fetchPage: vi.fn().mockResolvedValue({
         id: "task_page_restart",
         properties: { Task: { type: "title", title: [{ plain_text: "Recovered Task" }] } },

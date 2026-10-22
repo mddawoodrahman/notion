@@ -42,23 +42,22 @@ export const webhookRoutes: FastifyPluginAsync<WebhookRouteOptions> = async (fas
       return reply.status(200).send({ ok: true });
     }
 
-    // 2. Token availability check
+    // 2. Verification token availability (SEC-001): fail closed unless explicitly opted out.
     const verificationToken = config.NOTION_WEBHOOK_VERIFICATION_TOKEN;
-    if (!verificationToken) {
-      if (config.NODE_ENV === "production") {
-        logger.error("Rejecting webhook: NOTION_WEBHOOK_VERIFICATION_TOKEN is not configured");
-        return reply.status(503).send({ ok: false });
-      }
+    const allowUnsigned = config.ALLOW_UNSIGNED_WEBHOOKS;
+    if (!verificationToken && !allowUnsigned) {
+      logger.error("Rejecting webhook: NOTION_WEBHOOK_VERIFICATION_TOKEN is not configured");
+      return reply.status(503).send({ ok: false });
     }
 
     // 3. Signature verification (SPEC §8.2)
-    const signature = request.headers["x-notion-signature"] as string | undefined;
-    if (!signature) {
-      logger.warn({ ip: request.ip }, "Rejected webhook delivery: missing X-Notion-Signature");
-      return reply.status(401).send({ ok: false });
-    }
-
     if (verificationToken) {
+      const signature = request.headers["x-notion-signature"] as string | undefined;
+      if (!signature) {
+        logger.warn({ ip: request.ip }, "Rejected webhook delivery: missing X-Notion-Signature");
+        return reply.status(401).send({ ok: false });
+      }
+
       try {
         const isValid = await verifyWebhookSignature({
           body: rawBody,
@@ -74,6 +73,11 @@ export const webhookRoutes: FastifyPluginAsync<WebhookRouteOptions> = async (fas
         logger.error({ err, ip: request.ip }, "Error executing webhook signature verification");
         return reply.status(401).send({ ok: false });
       }
+    } else {
+      logger.warn(
+        { ip: request.ip },
+        "Accepting unsigned webhook delivery because ALLOW_UNSIGNED_WEBHOOKS=true (development only)"
+      );
     }
 
     // 4. Envelope validation (SPEC §8.4)

@@ -20,7 +20,7 @@ export class TasksRepository {
         $1, $2, $3, $4, $5, $6, $7,
         $8, $9, $10, $11, $12,
         $13, $14, $15, $16,
-        $17, $18::jsonb, $19::jsonb, NOW()
+        $17, $18::jsonb, COALESCE($19::jsonb, '[]'::jsonb), NOW()
       )
       ON CONFLICT (notion_page_id) DO UPDATE SET
         title                   = EXCLUDED.title,
@@ -40,10 +40,9 @@ export class TasksRepository {
         notion_created_time     = EXCLUDED.notion_created_time,
         notion_last_edited_time = EXCLUDED.notion_last_edited_time,
         raw_properties          = EXCLUDED.raw_properties,
-        page_content_json       = EXCLUDED.page_content_json,
+        page_content_json       = COALESCE($19::jsonb, notion_sync.notion_tasks.page_content_json),
         synced_at               = NOW()
       WHERE notion_sync.notion_tasks.notion_last_edited_time IS NULL
-         OR EXCLUDED.notion_last_edited_time IS NULL
          OR EXCLUDED.notion_last_edited_time >= notion_sync.notion_tasks.notion_last_edited_time
       RETURNING *;
     `;
@@ -67,7 +66,10 @@ export class TasksRepository {
       task.notion_created_time,
       task.notion_last_edited_time,
       JSON.stringify(task.raw_properties ?? {}),
-      JSON.stringify(task.page_content_json ?? []),
+      // BUG-004: null means "content not fetched" so the SQL preserves stored content
+      task.page_content_json === null || task.page_content_json === undefined
+        ? null
+        : JSON.stringify(task.page_content_json),
     ];
 
     const result = await db.query(query, values);

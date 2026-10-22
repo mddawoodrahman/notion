@@ -7,6 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrations } from '../../db/migrate.js';
 import { createPool, withTransaction } from '../../db/pool.js';
 import { InboxRepository } from '../../db/inbox-repo.js';
+import type { InboxEventRecord } from '../../db/inbox-repo.js';
 import { RunsRepository } from '../../db/runs-repo.js';
 import { TasksRepository } from '../../db/tasks-repo.js';
 import type { NormalizedTaskRecord } from '../../sync/normalize.js';
@@ -141,6 +142,78 @@ describe.sequential('repositories (real PostgreSQL)', () => {
       expect((await getTaskRow(pool, task().notion_page_id))?.title).toBe('Newest');
     });
 
+    it('preserves stored page_content_json when a newer snapshot has no fetched content (BUG-004)', async () => {
+      await TasksRepository.upsertTask(
+        pool,
+        task({ page_content_json: [{ type: 'paragraph', text: 'keep me' }] }),
+      );
+
+      const newer = await TasksRepository.upsertTask(
+        pool,
+        task({
+          title: 'Newer revision',
+          notion_last_edited_time: '2026-10-21T13:00:00.000Z',
+          page_content_json: null,
+        }),
+      );
+
+      expect(newer).not.toBeNull();
+      let row = await getTaskRow(pool, task().notion_page_id);
+      expect(row?.title).toBe('Newer revision');
+      expect(row?.page_content_json).toEqual([{ type: 'paragraph', text: 'keep me' }]);
+
+      // A genuinely empty fetched page ([]) must still overwrite stored content
+      await TasksRepository.upsertTask(
+        pool,
+        task({ notion_last_edited_time: '2026-10-22T00:00:00.000Z', page_content_json: [] }),
+      );
+      row = await getTaskRow(pool, task().notion_page_id);
+      expect(row?.page_content_json).toEqual([]);
+    });
+
+    it('stores an empty array when content was never fetched on first insert (BUG-004)', async () => {
+      await TasksRepository.upsertTask(pool, task({ page_content_json: null }));
+
+      const row = await getTaskRow(pool, task().notion_page_id);
+      expect(row?.page_content_json).toEqual([]);
+      expect(await countTasks(pool)).toBe(1);
+    });
+
+    it('never lets a null notion_last_edited_time overwrite an existing row (BUG-008, INV-4)', async () => {
+      await TasksRepository.upsertTask(pool, task({ title: 'Authoritative' }));
+
+      const malformed = await TasksRepository.upsertTask(
+        pool,
+        task({ title: 'Malformed payload', status: 'Done', notion_last_edited_time: null }),
+      );
+
+      expect(malformed).toBeNull();
+      const row = await getTaskRow(pool, task().notion_page_id);
+      expect(row?.title).toBe('Authoritative');
+      expect(row?.status).toBe('Todo');
+      expect(row?.notion_last_edited_time).toEqual(new Date('2026-10-20T12:00:00.000Z'));
+
+      // A valid snapshot can still repair a row that has no timestamp at all
+      await TasksRepository.upsertTask(
+        pool,
+        task({
+          notion_page_id: 'page-null-timestamp',
+          title: 'No timestamp yet',
+          notion_last_edited_time: null,
+        }),
+      );
+      const repaired = await TasksRepository.upsertTask(
+        pool,
+        task({
+          notion_page_id: 'page-null-timestamp',
+          title: 'Timestamped',
+          notion_last_edited_time: '2026-10-20T12:00:00.000Z',
+        }),
+      );
+      expect(repaired).not.toBeNull();
+      expect((await getTaskRow(pool, 'page-null-timestamp'))?.title).toBe('Timestamped');
+    });
+
     it('applies an equal timestamp and refreshes synced_at (I-04, INV-4)', async () => {
       await TasksRepository.upsertTask(pool, task());
       const before = await getTaskRow(pool, task().notion_page_id);
@@ -233,22 +306,31 @@ describe.sequential('repositories (real PostgreSQL)', () => {
       await InboxRepository.enqueueEvent(pool, event('evt-1'));
       await InboxRepository.enqueueEvent(pool, event('evt-2'));
 
-      const [first, second, third] = await Promise.all([
+      const results = await Promise.all([
         InboxRepository.claimNextEvent(pool),
         InboxRepository.claimNextEvent(pool),
         InboxRepository.claimNextEvent(pool),
       ]);
 
-      expect(first?.event_id).toBeDefined();
-      expect(second?.event_id).toBeDefined();
-      expect(first?.event_id).not.toBe(second?.event_id);
-      expect(third).toBeNull();
+      // Concurrent claims race across snapshot windows, so the null result is not
+      // positionally stable: assert on the set of claims, not on array order (BUG-006).
+      const claimed = results.filter((record): record is InboxEventRecord => record !== null);
+      const rejected = results.filter((record) => record === null);
+
+      expect(claimed).toHaveLength(2);
+      expect(rejected).toHaveLength(1);
+
+      const claimedIds = claimed.map((record) => record.event_id).sort();
+      expect(claimedIds).toEqual(['evt-1', 'evt-2']);
+      expect(new Set(claimedIds).size).toBe(2);
 
       const processing = await pool.query<{ count: string }>(
         `SELECT COUNT(*)::text AS count FROM notion_sync.sync_inbox WHERE status = 'processing'`,
       );
       expect(Number(processing.rows[0]?.count)).toBe(2);
-      expect((await getInboxRow(pool, first?.event_id ?? ''))?.attempts).toBe(1);
+      for (const claimedId of claimedIds) {
+        expect((await getInboxRow(pool, claimedId))?.attempts).toBe(1);
+      }
     });
 
     it('increments attempts on claim and clears locked_at when processed (I-09)', async () => {

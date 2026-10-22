@@ -4,6 +4,17 @@ import { NotionApiError, ConfigurationError, sanitizeErrorMessage } from "../src
 import { backoffMs, parseRetryAfter } from "./retry-policy.js";
 import { logger } from "../src/logger.js";
 
+/** One page of results from a data source query, including the Notion query-cap signal. */
+export interface DataSourcePageBatch {
+  results: any[];
+  next_cursor: string | null;
+  has_more: boolean;
+  /** True when Notion reports the query result set is incomplete (e.g. 10,000-result cap). */
+  is_incomplete: boolean;
+  /** Notion's `incomplete_reason` (e.g. `query_result_limit_reached`), when reported. */
+  incomplete_reason: string | null;
+}
+
 export class NotionSyncClient {
   private readonly client: Client;
   private readonly config: AppConfig;
@@ -102,11 +113,13 @@ export class NotionSyncClient {
 
   /**
    * Queries task pages from the target data source with cursor pagination.
+   * Surfaces Notion's `request_status` so callers can detect capped (incomplete)
+   * result sets (BUG-002) instead of trusting `has_more === false`.
    */
   async queryDataSourcePages(
     dataSourceId: string,
     options: { startCursor?: string; pageSize?: number } = {}
-  ): Promise<{ results: any[]; next_cursor: string | null; has_more: boolean }> {
+  ): Promise<DataSourcePageBatch> {
     const pageSize = Math.min(Math.max(options.pageSize ?? this.config.SYNC_PAGE_SIZE, 1), 100);
 
     return this.executeWithRetry(
@@ -118,11 +131,7 @@ export class NotionSyncClient {
             start_cursor: options.startCursor,
             page_size: pageSize,
           });
-          return {
-            results: res.results ?? [],
-            next_cursor: res.next_cursor ?? null,
-            has_more: Boolean(res.has_more),
-          };
+          return this.toPageBatch(res);
         }
 
         // Fallback for database query
@@ -132,14 +141,24 @@ export class NotionSyncClient {
           page_size: pageSize,
         });
 
-        return {
-          results: res.results ?? [],
-          next_cursor: res.next_cursor ?? null,
-          has_more: Boolean(res.has_more),
-        };
+        return this.toPageBatch(res);
       },
       "dataSources.query"
     );
+  }
+
+  /** Normalizes a raw Notion query response into a page batch. */
+  private toPageBatch(res: any): DataSourcePageBatch {
+    const requestStatus = res?.request_status;
+    const isIncomplete = requestStatus?.type === "incomplete";
+
+    return {
+      results: res?.results ?? [],
+      next_cursor: res?.next_cursor ?? null,
+      has_more: Boolean(res?.has_more),
+      is_incomplete: isIncomplete,
+      incomplete_reason: isIncomplete ? requestStatus?.incomplete_reason ?? null : null,
+    };
   }
 
   /**

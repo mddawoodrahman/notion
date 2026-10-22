@@ -89,4 +89,49 @@ describe("Configuration and Environment Validation", () => {
       expect((err as Error).message).not.toContain(sensitiveSecret);
     }
   });
+
+  it("requires DATABASE_URL, NOTION_API_KEY and NOTION_DATABASE_ID outside NODE_ENV=test (IMP-001)", () => {
+    let message = "";
+    try {
+      validateConfig({ NODE_ENV: "development", PORT: "3000" });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+
+    expect(message).toContain("DATABASE_URL");
+    expect(message).toContain("NOTION_API_KEY");
+    expect(message).toContain("NOTION_DATABASE_ID");
+
+    // A fully specified development config is still accepted
+    const development = validateConfig({
+      NODE_ENV: "development",
+      NOTION_API_KEY: "secret_dev_placeholder_1234567890",
+      NOTION_DATABASE_ID: "12345678-1234-1234-1234-123456789abc",
+      DATABASE_URL: "postgresql://user:pass@localhost:5432/db",
+    });
+    expect(development.NODE_ENV).toBe("development");
+    expect(development.NOTION_WEBHOOK_VERIFICATION_TOKEN).toBeUndefined();
+  });
+
+  it("keeps offline test configs working and marks unsigned webhooks disallowed by default (IMP-001, SEC-001)", () => {
+    const config = validateConfig({ NODE_ENV: "test", PORT: "3000" });
+
+    expect(config.DATABASE_URL).toContain("postgresql://");
+    expect(config.NOTION_API_KEY).not.toBe("");
+    expect(config.NOTION_DATABASE_ID).not.toBe("");
+    expect(config.ALLOW_UNSIGNED_WEBHOOKS).toBe(false);
+  });
+
+  it("forbids ALLOW_UNSIGNED_WEBHOOKS=true in production (SEC-001)", () => {
+    expect(() => {
+      validateConfig({
+        NODE_ENV: "production",
+        NOTION_API_KEY: "secret_1234567890",
+        NOTION_DATABASE_ID: "12345678-1234-1234-1234-123456789abc",
+        DATABASE_URL: "postgresql://user:pass@localhost:5432/db",
+        NOTION_WEBHOOK_VERIFICATION_TOKEN: "token123456789012345678901234567890",
+        ALLOW_UNSIGNED_WEBHOOKS: "true",
+      });
+    }).toThrowError(/ALLOW_UNSIGNED_WEBHOOKS/);
+  });
 });

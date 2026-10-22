@@ -102,4 +102,103 @@ describe("Notion API Client and Retry Policy", () => {
       expect(err.message).toContain("[REDACTED_NOTION_KEY]");
     }
   });
+
+  it("surfaces Notion request_status as is_incomplete / incomplete_reason (BUG-002)", async () => {
+    const mockClient = {
+      dataSources: {
+        query: vi.fn()
+          .mockResolvedValueOnce({
+            results: [{ id: "page_capped_1" }],
+            next_cursor: null,
+            has_more: false,
+            request_status: { type: "incomplete", incomplete_reason: "query_result_limit_reached" },
+          })
+          .mockResolvedValueOnce({
+            results: [{ id: "page_ok_1" }],
+            next_cursor: "cursor_next",
+            has_more: true,
+          }),
+      },
+    } as any;
+
+    const syncClient = new NotionSyncClient(testConfig, mockClient);
+
+    const capped = await syncClient.queryDataSourcePages("ds_123");
+    expect(capped).toMatchObject({
+      has_more: false,
+      is_incomplete: true,
+      incomplete_reason: "query_result_limit_reached",
+    });
+    expect(capped.results).toHaveLength(1);
+
+    const complete = await syncClient.queryDataSourcePages("ds_123");
+    expect(complete).toMatchObject({
+      has_more: true,
+      next_cursor: "cursor_next",
+      is_incomplete: false,
+      incomplete_reason: null,
+    });
+  });
+
+  it("retries status-less RequestTimeoutError up to SYNC_MAX_ATTEMPTS before succeeding (BUG-003)", async () => {
+    vi.useFakeTimers();
+    try {
+      let callCount = 0;
+      const mockClient = {
+        pages: {
+          retrieve: vi.fn().mockImplementation(async () => {
+            callCount++;
+            if (callCount < 3) {
+              const err = new Error("Request timed out after 60000ms") as any;
+              err.name = "RequestTimeoutError";
+              err.code = "notionhq_client_request_timeout";
+              throw err;
+            }
+            return { id: "page_timeout_ok", properties: {} };
+          }),
+        },
+      } as any;
+
+      const syncClient = new NotionSyncClient(testConfig, mockClient);
+      const promise = syncClient.fetchPage("page_timeout_ok");
+
+      // Drive the exponential backoff waits deterministically
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      await expect(promise).resolves.toMatchObject({ id: "page_timeout_ok" });
+      expect(callCount).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries status-less ECONNRESET network failures and reports them retryable after exhaustion (BUG-003)", async () => {
+    vi.useFakeTimers();
+    try {
+      let callCount = 0;
+      const mockClient = {
+        pages: {
+          retrieve: vi.fn().mockImplementation(async () => {
+            callCount++;
+            const err = new Error("socket hang up") as any;
+            err.code = "ECONNRESET";
+            throw err;
+          }),
+        },
+      } as any;
+
+      const syncClient = new NotionSyncClient(testConfig, mockClient);
+      const settled = syncClient.fetchPage("page_reset").catch((err) => err);
+
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      const err = await settled;
+      expect(err).toBeInstanceOf(NotionApiError);
+      expect(err.isRetryable).toBe(true);
+      expect(err.message).toContain("network");
+      expect(callCount).toBe(3); // SYNC_MAX_ATTEMPTS attempts, not one
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

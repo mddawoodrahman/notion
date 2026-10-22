@@ -20,6 +20,9 @@ export interface BackfillResult {
   pageFailures: number;
   status: RunStatus;
   dataSourceId: string;
+  /** True when Notion reported the query result set is incomplete (e.g. 10k cap). */
+  isIncomplete: boolean;
+  incompleteReason: string | null;
 }
 
 /**
@@ -49,6 +52,8 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillRes
   let cursor: string | undefined = undefined;
   let hasMore = true;
   let finalStatus: RunStatus = "succeeded";
+  let isIncomplete = false;
+  let incompleteReason: string | null = null;
   let lastErrorMessage: string | null = null;
   const seenCursors = new Set<string>();
 
@@ -66,6 +71,16 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillRes
         startCursor: cursor,
         pageSize: config.SYNC_PAGE_SIZE,
       });
+
+      // BUG-002: surface the Notion 10,000-result query cap instead of trusting has_more=false
+      if (response.is_incomplete) {
+        isIncomplete = true;
+        incompleteReason = response.incomplete_reason ?? "query_result_limit_reached";
+        logger.warn(
+          { dataSourceId, cursor, incompleteReason },
+          "Notion reported an incomplete query result set during backfill"
+        );
+      }
 
       for (const page of response.results) {
         try {
@@ -91,8 +106,17 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillRes
       cursor = response.next_cursor ?? undefined;
     }
 
-    if (pageFailures > 0) {
-      finalStatus = recordsProcessed > 0 ? "partial" : "failed";
+    if (isIncomplete || pageFailures > 0) {
+      finalStatus = recordsProcessed > 0 || isIncomplete ? "partial" : "failed";
+      if (!lastErrorMessage) {
+        lastErrorMessage = isIncomplete
+          ? `Notion query returned an incomplete result set (${incompleteReason ?? "unknown reason"})`
+          : `Backfill completed with ${pageFailures} page failure(s)`;
+      }
+      logger.warn(
+        { recordsProcessed, pageFailures, isIncomplete, incompleteReason },
+        "Backfill coverage is incomplete; run status recorded as partial"
+      );
     }
   } catch (err) {
     finalStatus = "failed";
@@ -113,7 +137,7 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillRes
   }
 
   logger.info(
-    { runId, recordsProcessed, pageFailures, status: finalStatus },
+    { runId, recordsProcessed, pageFailures, status: finalStatus, isIncomplete },
     "Initial backfill completed"
   );
 
@@ -123,5 +147,7 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillRes
     pageFailures,
     status: finalStatus,
     dataSourceId,
+    isIncomplete,
+    incompleteReason,
   };
 }

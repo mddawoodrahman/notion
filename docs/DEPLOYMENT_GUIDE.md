@@ -19,11 +19,13 @@ All sensitive credentials must be set in your host's environment or secrets mana
 | `NOTION_DATABASE_ID` | `32-char hex UUID` | Master Tasks Database ID in Notion |
 | `NOTION_DATA_SOURCE_ID` | `UUID` (optional if DB has 1 source) | Master Tasks Data Source ID |
 | `NOTION_VERSION` | `2026-03-11` | Pinned Notion API version |
-| `NOTION_WEBHOOK_VERIFICATION_TOKEN` | `min 32-char string` | Notion Webhook Subscription verification secret |
+| `NOTION_WEBHOOK_VERIFICATION_TOKEN` | `min 32-char string` | Notion Webhook Subscription verification secret (required in production; without it the receiver fails closed with `503`) |
+| `ALLOW_UNSIGNED_WEBHOOKS` | `false` | Development-only opt-out of webhook signature verification. Rejected when `NODE_ENV=production`. |
 | `DATABASE_URL` | `postgresql://...sslmode=require` | Pooled Neon PostgreSQL connection URL for app runtime |
 | `DIRECT_DATABASE_URL` | `postgresql://...sslmode=require` | Direct Neon PostgreSQL connection URL for migrations |
-| `SYNC_TIMEZONE` | `Asia/Kolkata` | IANA timezone for date-only task deadlines |
-| `SYNC_RECONCILIATION_INTERVAL_MINUTES`| `30` | Interval between scheduled full scans |
+| `DB_SSL_INSECURE` | `false` | Development-only opt-out of TLS certificate verification for self-signed local databases. Leave `false` for Neon. |
+| `SYNC_TIMEZONE` | `Asia/Kolkata` | IANA timezone used to derive `due_date` for timed due dates |
+| `SYNC_RECONCILIATION_INTERVAL_MINUTES`| `30` | Recommended cadence for the **external** reconciliation scheduler (informational; the service has no in-process scheduler) |
 | `SYNC_MAX_ATTEMPTS` | `8` | Maximum retry attempts before marking an event failed |
 | `SYNC_PAGE_SIZE` | `100` | Pagination page size for Notion queries (max 100) |
 | `SYNC_SYNC_BODY_CONTENT` | `true` | Enables serialization of task body blocks |
@@ -84,7 +86,7 @@ npm run db:migrate -- status
    `{"verification_token": "secret_..."}`
 4. The service logs this token (redacted to last 4 chars) and responds `200 {"ok":true}`.
 5. Retrieve the verification token, copy it into your production environment as `NOTION_WEBHOOK_VERIFICATION_TOKEN`, and restart the service.
-6. All subsequent deliveries require valid `X-Notion-Signature` HMAC-SHA256 headers.
+6. All subsequent deliveries require valid `X-Notion-Signature` HMAC-SHA256 headers. If the token is missing in production the receiver answers `503` and stores nothing (fail-closed).
 
 ---
 
@@ -103,7 +105,7 @@ For production deployments, three roles should run:
    # or node dist/scripts/sync-worker.js
    ```
 3. **Scheduled Reconciliation Job:**
-   Run via crontab, cloud cron, or Kubernetes CronJob every 30 minutes:
+   Run via crontab, cloud cron, or Kubernetes CronJob every 30 minutes. The service ships **no in-process scheduler**; if this external trigger is not configured, reconciliation never runs:
    ```bash
    npm run sync:reconcile
    # or node dist/scripts/sync-reconcile.js

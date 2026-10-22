@@ -138,25 +138,39 @@ export async function getMigrationStatus(
 }
 
 // CLI entrypoint
+export type MigrationOperation = "run_migrations" | "show_status" | "unknown";
+
+/**
+ * Maps CLI argv to a migration operation (BUG-005).
+ * `argv[2]` is the first user argument: `npm run db:migrate` -> "up",
+ * `npm run db:migrate -- status` -> "status".
+ */
+export function resolveMigrationOperation(argv: readonly string[] = process.argv): MigrationOperation {
+  const command = argv[2] ?? "up";
+  if (command === "status") return "show_status";
+  if (command === "up") return "run_migrations";
+  return "unknown";
+}
+
 async function cli() {
-  const command = process.argv[2] ?? "up";
+  const operation = resolveMigrationOperation(process.argv);
   const config = getConfig();
   const connString = config.DIRECT_DATABASE_URL || config.DATABASE_URL;
   const pool = getPool(connString);
 
   try {
-    if (command === "status") {
+    if (operation === "show_status") {
       const status = await getMigrationStatus(pool);
       console.log("Migration status:");
       for (const item of status) {
         console.log(`  ${item.applied ? "[✓]" : "[ ]"} ${item.version} ${item.appliedAt ? `(applied at ${item.appliedAt.toISOString()})` : "(pending)"}`);
       }
-    } else if (command === "up") {
+    } else if (operation === "run_migrations") {
       const results = await runMigrations(pool);
       const appliedCount = results.filter((r) => r.applied).length;
       console.log(`Migrations complete. Applied ${appliedCount} new migrations.`);
     } else {
-      console.error(`Unknown migration command: ${command}. Use 'up' or 'status'.`);
+      console.error(`Unknown migration command: ${process.argv[2] ?? ""}. Use 'up' or 'status'.`);
       process.exit(1);
     }
   } catch (err) {

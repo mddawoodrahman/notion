@@ -177,4 +177,61 @@ describe("Property Normalization (Pure, I/O-Free)", () => {
 
     expect(record.is_in_source).toBe(false);
   });
+
+  it("derives due_date for timed due dates in the configured IANA timezone (DOC-001)", () => {
+    const timedPage = {
+      id: "task-timezone",
+      properties: {
+        Task: { type: "title", title: [{ plain_text: "Timezone task" }] },
+        "Due Date": { type: "date", date: { start: "2026-03-11T02:00:00+05:30" } },
+      },
+    };
+
+    // 02:00 IST on Mar 11 == 2026-03-10T20:30Z
+    const kolkata = normalizePage(timedPage, { timezone: "Asia/Kolkata" });
+    expect(kolkata.due_at).toBe("2026-03-10T20:30:00.000Z");
+    expect(kolkata.due_date).toBe("2026-03-11");
+
+    // ...which is still the evening of Mar 10 in New York
+    const newYork = normalizePage(timedPage, { timezone: "America/New_York" });
+    expect(newYork.due_date).toBe("2026-03-10");
+
+    // Unset timezone falls back to Asia/Kolkata (SYNC_TIMEZONE default)
+    const defaulted = normalizePage(timedPage);
+    expect(defaulted.due_date).toBe("2026-03-11");
+  });
+
+  it("keeps date-only due dates verbatim regardless of timezone (DOC-001)", () => {
+    const dateOnlyPage = {
+      id: "task-date-only-tz",
+      properties: {
+        Task: { type: "title", title: [{ plain_text: "Calendar date task" }] },
+        "Due Date": { type: "date", date: { start: "2026-03-11" } },
+      },
+    };
+
+    const record = normalizePage(dateOnlyPage, { timezone: "America/New_York" });
+    expect(record.due_date).toBe("2026-03-11");
+    expect(record.due_at).toBeNull();
+  });
+
+  it("distinguishes fetched-but-empty content from content that was never fetched (BUG-004)", () => {
+    const page = {
+      id: "task-content",
+      properties: {
+        Task: { type: "title", title: [{ plain_text: "Content task" }] },
+      },
+    };
+
+    // Fetched and empty: the page genuinely has no body blocks
+    const empty = normalizePage(page, { bodyBlocks: [] });
+    expect(empty.page_content_json).toEqual([]);
+
+    // Not fetched: null instructs the upsert to preserve any stored content
+    const notFetched = normalizePage(page);
+    expect(notFetched.page_content_json).toBeNull();
+
+    const fetched = normalizePage(page, { bodyBlocks: [{ type: "paragraph" }] });
+    expect(fetched.page_content_json).toEqual([{ type: "paragraph" }]);
+  });
 });

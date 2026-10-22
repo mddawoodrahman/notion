@@ -19,13 +19,26 @@ export function getPool(connectionString?: string): pg.Pool {
   return defaultPool;
 }
 
-export function createPool(connectionString: string): pg.Pool {
+export function resolveSslConfig(
+  connectionString: string,
+  allowInsecure: boolean = process.env.DB_SSL_INSECURE === "true"
+): true | { rejectUnauthorized: false } | undefined {
   const isSsl = connectionString.includes("sslmode=require") ||
     (!connectionString.includes("localhost") && !connectionString.includes("127.0.0.1"));
 
+  if (!isSsl) {
+    return undefined;
+  }
+
+  // SEC-002: verify TLS certificates by default. DB_SSL_INSECURE=true is an explicit
+  // opt-out for local/self-signed development databases only.
+  return allowInsecure ? { rejectUnauthorized: false } : true;
+}
+
+export function createPool(connectionString: string): pg.Pool {
   return new Pool({
     connectionString,
-    ssl: isSsl ? { rejectUnauthorized: false } : undefined,
+    ssl: resolveSslConfig(connectionString),
     max: 10,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 5000,
