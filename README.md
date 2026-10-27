@@ -11,7 +11,7 @@
 [![Psycopg 3](https://img.shields.io/badge/Psycopg-3.2%2B-336791?logo=postgresql&logoColor=white)](https://www.psycopg.org/psycopg3/)
 [![Notion API](https://img.shields.io/badge/Notion%20API-2026--03--11-black?logo=notion&logoColor=white)](https://developers.notion.com/)
 [![uv](https://img.shields.io/badge/uv-0.5%2B-DE5FE9?logo=astral&logoColor=white)](https://github.com/astral-sh/uv)
-[![pytest](https://img.shields.io/badge/Tests-145%20passed-brightgreen?logo=pytest&logoColor=white)](tests/)
+[![pytest](https://img.shields.io/badge/Tests-146%20passed-brightgreen?logo=pytest&logoColor=white)](tests/)
 [![Ruff](https://img.shields.io/badge/Code%20Style-Ruff-black?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![Mypy](https://img.shields.io/badge/Type%20Check-Mypy-blue?logo=python&logoColor=white)](https://mypy-lang.org/)
 [![Docker](https://img.shields.io/badge/Docker-Multi--stage-2496ED?logo=docker&logoColor=white)](Dockerfile)
@@ -29,7 +29,7 @@
 | **Repository** | [github.com/mddawoodrahman/notion](https://github.com/mddawoodrahman/notion) |
 | **Python Version** | `>=3.12` (verified and tested on Python 3.12.15) |
 | **Architecture** | Decoupled 3-process architecture: FastAPI Ingestion API + Independent Background Worker + Externally Scheduled CLI |
-| **Automated Test Suite** | **145 passed** in 17 test files across 3 suites (95 unit, 41 real PostgreSQL integration, 9 e2e acceptance) |
+| **Automated Test Suite** | **146 passed** in 17 test files across 3 suites (96 unit, 41 real PostgreSQL integration, 9 e2e acceptance) |
 | **License** | Proprietary — All rights reserved |
 
 ---
@@ -1014,7 +1014,7 @@ tests\unit\test_repository.py .....                                      [ 86%]
 tests\unit\test_webhooks.py ..........                                   [ 93%]
 tests\unit\test_worker.py .........                                      [100%]
 
-============================ 145 passed in 17.94s =============================
+============================ 146 passed in 18.07s =============================
 ```
 
 ### Regression Verification Coverage
@@ -1095,13 +1095,13 @@ Production hosting requires three distinct roles:
 #### Linux Crontab (`crontab -e`)
 ```text
 # Run reconciliation every 30 minutes
-*/30 * * * * cd /opt/notion && /root/.cargo/bin/uv run taskbridge reconcile >> /var/log/notion-reconcile.log 2>&1
+*/30 * * * * cd /opt/notion && /root/.cargo/bin/uv run taskbridge reconcile >> /var/log/taskbridge-reconcile.log 2>&1
 ```
 
-#### Systemd Timer (`/etc/systemd/system/notion-reconcile.timer`)
+#### Systemd Timer (`/etc/systemd/system/taskbridge-reconcile.timer`)
 ```ini
 [Unit]
-Description=Trigger Notion Tasks Reconciliation Every 30 Minutes
+Description=Trigger TaskBridge Reconciliation Every 30 Minutes
 
 [Timer]
 OnCalendar=*:0/30
@@ -1115,7 +1115,7 @@ WantedBy=timers.target
 ```powershell
 $action = New-ScheduledTaskAction -Execute "uv" -Argument "run taskbridge reconcile" -WorkingDirectory "D:\Notion"
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30)
-Register-ScheduledTask -Action $action -Trigger $trigger -TaskName "NotionTasksSyncReconcile" -Description "Periodic Notion Reconciliation"
+Register-ScheduledTask -Action $action -Trigger $trigger -TaskName "TaskBridgeReconcile" -Description "Periodic TaskBridge Reconciliation"
 ```
 
 ### Pre-Deployment Verification Checklist

@@ -54,3 +54,5 @@ def test_taskbridge_cli_app_name_and_help() -> None:
     assert "Synchronize with confidence" in result.output
     for cmd in ["worker", "backfill", "reconcile", "recover-stuck", "retry-failed", "migrate"]:
         assert cmd in result.output
+        cmd_result = runner.invoke(cli_app, [cmd, "--help"])
+        assert cmd_result.exit_code == 0

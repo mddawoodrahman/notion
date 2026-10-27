@@ -25,7 +25,7 @@ All 7 architectural invariants (INV-1 through INV-7) and all 14 operational feat
 - **INV-7 (Zero secret leakage):** Sensitive tokens (`NOTION_API_KEY`, `NOTION_WEBHOOK_VERIFICATION_TOKEN`, `DATABASE_URL` passwords) stripped from error messages, stack traces, and logs.
 
 ### Verification Status:
-- **Python 3.12 Test Suite:** **145 tests in 17 files pass** — 95 unit tests, **41 integration tests against real PostgreSQL 18** (ephemeral instance, zero DB mocks), and 9 acceptance tests.
+- **Python 3.12 Test Suite:** **146 tests in 17 files pass** — 96 unit tests, **41 integration tests against real PostgreSQL 18** (ephemeral instance, zero DB mocks), and 9 acceptance tests.
 - **Python Static Quality:** Strict `mypy` passes across all source files, `ruff check` passes with 0 lint violations, and `ruff format --check` confirms 100% compliant formatting.
 - **Neon Live Database Status:** Verified connectivity to Neon with `uv run taskbridge migrate status` confirming migration `0001_init.sql` is applied.
 
@@ -54,10 +54,10 @@ The HTTP webhook endpoint and live Notion API sync have **not** been tested in a
 | `uv run ruff check app tests` | exit 0, 0 errors |
 | `uv run ruff format --check app tests` | exit 0, all files formatted |
 | `uv run mypy app tests` | exit 0, `Success: no issues found in 53 source files` |
-| `uv run pytest tests/unit` | 13 files, **95 tests passed** |
+| `uv run pytest tests/unit` | 13 files, **96 tests passed** |
 | `uv run pytest tests/integration` | 3 files, **41 tests passed** (real PostgreSQL 18 via ephemeral instance, zero DB mocks) |
 | `uv run pytest tests/e2e` | 1 file, **9 tests passed** (in-memory harness) |
-| `uv run pytest` | 17 files, **145 tests passed**, 0 failed |
+| `uv run pytest` | 17 files, **146 tests passed**, 0 failed |
 | `uv run taskbridge migrate status` | exit 0, `[X] 0001_init.sql (applied)` on Neon |
 
 ## Technical audit remediation

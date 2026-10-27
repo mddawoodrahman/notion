@@ -21,8 +21,8 @@ uv sync --all-extras --dev
 uv run ruff check app tests
 uv run ruff format --check app tests
 uv run mypy app tests
-uv run pytest                        # all suites (145 tests)
-uv run pytest tests/unit             # unit suite (95 tests)
+uv run pytest                        # all suites (146 tests)
+uv run pytest tests/unit             # unit suite (96 tests)
 uv run pytest tests/integration      # integration suite against real PostgreSQL (41 tests)
 uv run pytest tests/e2e              # end-to-end acceptance suite (9 tests)
 

@@ -149,18 +149,18 @@ docker run -d \
   --name taskbridge-api \
   -p 3000:3000 \
   --env-file .env \
-  taskbridge
+  taskbridge:latest
 
 # Run Background Worker container
 docker run -d \
   --name taskbridge-worker \
   --env-file .env \
-  taskbridge taskbridge worker
+  taskbridge:latest taskbridge worker
 
 # Run Reconciliation one-off task
 docker run --rm \
   --env-file .env \
-  taskbridge taskbridge reconcile
+  taskbridge:latest taskbridge reconcile
 
 # Alternatively, manage with Docker Compose:
 docker compose up -d api worker

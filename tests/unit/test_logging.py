@@ -99,3 +99,11 @@ def test_parse_log_level() -> None:
     assert parse_log_level("error") == logging.ERROR
     assert parse_log_level("fatal") == logging.CRITICAL
     assert parse_log_level(None) == logging.INFO
+
+
+def test_default_logger_identity() -> None:
+    from app.logging_config import get_logger, logger, setup_logger
+
+    assert logger.name == "taskbridge"
+    assert setup_logger().name == "taskbridge"
+    assert get_logger().name == "taskbridge"

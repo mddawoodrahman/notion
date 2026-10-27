@@ -109,7 +109,7 @@ def parse_log_level(level_str: str | None) -> int:
     return logging.INFO
 
 
-def setup_logger(name: str = "notion_sync") -> logging.Logger:
+def setup_logger(name: str = "taskbridge") -> logging.Logger:
     logger = logging.getLogger(name)
     level_str = os.getenv("LOG_LEVEL")
     if (os.getenv("APP_ENV") == "test" or os.getenv("NODE_ENV") == "test") and not level_str:
@@ -126,12 +126,12 @@ def setup_logger(name: str = "notion_sync") -> logging.Logger:
     return logger
 
 
-def get_logger(name: str = "notion_sync") -> logging.Logger:
+def get_logger(name: str = "taskbridge") -> logging.Logger:
     return setup_logger(name)
 
 
 def configure_logging(level_str: str | None = None, pretty: bool = False) -> None:
-    root = setup_logger("notion_sync")
+    root = setup_logger("taskbridge")
     if level_str:
         root.setLevel(parse_log_level(level_str))
 
