@@ -1,0 +1,75 @@
+# TaskBridge — Render Blueprint Specification
+# Bridge your tasks. Synchronize with confidence.
+# Docs: https://render.com/docs/blueprint-spec
+
+version: "1"
+
+# Shared environment variables across API, Background Worker, and Cron Job
+envVarGroups:
+  - name: taskbridge-shared-secrets
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false # Set in Render Dashboard: Pooled Neon PostgreSQL connection string
+      - key: DIRECT_DATABASE_URL
+        sync: false # Set in Render Dashboard: Direct Neon PostgreSQL connection string for advisory-locked migrations
+      - key: NOTION_API_KEY
+        sync: false # Set in Render Dashboard: Notion Internal Integration Secret (ntn_...)
+      - key: NOTION_DATABASE_ID
+        sync: false # Set in Render Dashboard: 32-character hex UUID of your Notion Tasks Database
+      - key: NOTION_DATA_SOURCE_ID
+        sync: false # Optional: Specify only if database has multiple sources
+      - key: NOTION_VERSION
+        value: "2026-03-11"
+      - key: NOTION_WEBHOOK_VERIFICATION_TOKEN
+        sync: false # Set after creating webhook in Notion Developer Portal
+      - key: ALLOW_UNSIGNED_WEBHOOKS
+        value: "false"
+      - key: SYNC_TIMEZONE
+        value: "Asia/Kolkata"
+      - key: SYNC_MAX_ATTEMPTS
+        value: "8"
+      - key: SYNC_PAGE_SIZE
+        value: "100"
+      - key: SYNC_SYNC_BODY_CONTENT
+        value: "true"
+      - key: SYNC_LEASE_SECONDS
+        value: "300"
+      - key: LOG_LEVEL
+        value: "info"
+
+services:
+  # 1. FastAPI Webhook Receiver & Health API
+  - type: web
+    name: taskbridge-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /health
+    preDeployCommand: taskbridge migrate
+    envVars:
+      - fromGroup: taskbridge-shared-secrets
+      - key: PORT
+        value: "3000"
+
+  # 2. Asynchronous Background Sync Worker
+  - type: worker
+    name: taskbridge-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: taskbridge worker
+    plan: starter
+    envVars:
+      - fromGroup: taskbridge-shared-secrets
+
+  # 3. Scheduled Reconciliation Cron Job (runs every 30 minutes)
+  - type: cron
+    name: taskbridge-reconcile
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: taskbridge reconcile
+    schedule: "*/30 * * * *"
+    plan: starter
+    envVars:
+      - fromGroup: taskbridge-shared-secrets
