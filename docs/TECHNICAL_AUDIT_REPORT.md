@@ -1,4 +1,6 @@
-# Technical Audit Report — Notion → PostgreSQL Task Sync
+# Technical Audit Report — TaskBridge (Notion → PostgreSQL Task Sync)
+
+> **Bridge your tasks. Synchronize with confidence.**
 
 | Field | Value |
 |---|---|

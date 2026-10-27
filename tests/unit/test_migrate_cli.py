@@ -32,8 +32,25 @@ def test_handles_standard_python_sys_argv() -> None:
     assert resolve_migration_operation(["app/db/migrate.py", "unknown"]) == "unknown"
 
 
-def test_pyproject_toml_scripts_define_notion_sync() -> None:
+def test_pyproject_toml_scripts_define_taskbridge_and_alias() -> None:
     pyproject_path = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
     assert pyproject_path.exists()
     content = pyproject_path.read_text(encoding="utf-8")
+    assert 'taskbridge = "app.cli.main:app"' in content
     assert 'notion-sync = "app.cli.main:app"' in content
+
+
+def test_taskbridge_cli_app_name_and_help() -> None:
+    from typer.testing import CliRunner
+
+    from app.cli.main import app as cli_app
+
+    assert cli_app.info.name == "taskbridge"
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["--help"])
+    assert result.exit_code == 0
+    assert "TaskBridge" in result.output
+    assert "Bridge your tasks" in result.output
+    assert "Synchronize with confidence" in result.output
+    for cmd in ["worker", "backfill", "reconcile", "recover-stuck", "retry-failed", "migrate"]:
+        assert cmd in result.output

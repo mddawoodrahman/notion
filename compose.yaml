@@ -1,10 +1,15 @@
+# TaskBridge — Notion to PostgreSQL Sync Engine
+# Tagline: Bridge your tasks. Synchronize with confidence.
+name: taskbridge
+
 services:
-  # 1. FastAPI HTTP Webhook & Health API
+  # 1. FastAPI HTTP Webhook & Health API (TaskBridge Ingestion)
   api:
+    image: taskbridge:latest
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: notion-sync-api
+    container_name: taskbridge-api
     ports:
       - "${PORT:-3000}:3000"
     env_file:
@@ -24,34 +29,36 @@ services:
 
   # 2. Asynchronous Background Sync Worker
   worker:
+    image: taskbridge:latest
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: notion-sync-worker
+    container_name: taskbridge-worker
     env_file:
       - path: .env
         required: false
     restart: unless-stopped
-    command: ["notion-sync", "worker"]
+    command: ["taskbridge", "worker"]
 
   # 3. Scheduled Reconciliation Job (invoked periodically via cron / orchestrator)
   reconcile:
+    image: taskbridge:latest
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: notion-sync-reconcile
+    container_name: taskbridge-reconcile
     profiles:
       - ops
     env_file:
       - path: .env
         required: false
-    command: ["notion-sync", "reconcile"]
+    command: ["taskbridge", "reconcile"]
 
   # Optional local PostgreSQL container for development and offline testing
   # (Production deployments connect to Neon via DATABASE_URL and DIRECT_DATABASE_URL)
   postgres:
     image: postgres:17-alpine
-    container_name: notion-sync-postgres
+    container_name: taskbridge-postgres
     profiles:
       - local-db
     environment:

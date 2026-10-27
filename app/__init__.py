@@ -1,4 +1,7 @@
-"""Notion Tasks to PostgreSQL Synchronization Service."""
+"""TaskBridge — Notion to PostgreSQL Sync Engine.
+
+Bridge your tasks. Synchronize with confidence.
+"""
 
 import asyncio
 import sys

@@ -1,8 +1,9 @@
 # Deployment and Secret Setup Guide
 
-**Project:** Notion Tasks → PostgreSQL Synchronization Service  
+**Project:** TaskBridge — Notion to PostgreSQL Sync Engine  
+**Tagline:** Bridge your tasks. Synchronize with confidence.  
 **Runtime:** Python 3.12+ (FastAPI, Uvicorn, Psycopg 3, uv)  
-**Release:** V1
+**Release:** V1 (`taskbridge@0.1.0`)
 
 ---
 
@@ -69,11 +70,11 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA notion_sync
 
 Run migrations before starting application traffic:
 ```bash
-uv run notion-sync migrate
+uv run taskbridge migrate
 ```
 To check migration status:
 ```bash
-uv run notion-sync migrate status
+uv run taskbridge migrate status
 ```
 
 ---
@@ -107,7 +108,7 @@ docker compose up -d api
 ### 2. Background Sync Worker (Async Queue Consumer)
 ```bash
 # Direct via uv:
-uv run notion-sync worker
+uv run taskbridge worker
 
 # Or via Docker:
 docker compose up -d worker
@@ -117,7 +118,7 @@ docker compose up -d worker
 Run via crontab, cloud cron, Kubernetes CronJob, or Task Scheduler every 30 minutes. The service ships **no in-process scheduler**; if this external trigger is not configured, reconciliation never runs:
 ```bash
 # Direct via uv:
-uv run notion-sync reconcile
+uv run taskbridge reconcile
 
 # Or via Docker:
 docker compose run --rm reconcile
@@ -126,11 +127,11 @@ docker compose run --rm reconcile
 ### Initial Data Import:
 Before enabling live webhook traffic or worker, run the initial backfill:
 ```bash
-uv run notion-sync backfill
+uv run taskbridge backfill
 ```
 Dry run is also available:
 ```bash
-uv run notion-sync backfill --dry-run
+uv run taskbridge backfill --dry-run
 ```
 
 ---
@@ -141,25 +142,25 @@ The repository includes a multi-stage `Dockerfile` and `compose.yaml`:
 
 ```bash
 # Build production Docker image
-docker build -t notion-tasks-pg-sync .
+docker build -t taskbridge:latest .
 
 # Run Webhook API container
 docker run -d \
-  --name notion-sync-api \
+  --name taskbridge-api \
   -p 3000:3000 \
   --env-file .env \
-  notion-tasks-pg-sync
+  taskbridge
 
 # Run Background Worker container
 docker run -d \
-  --name notion-sync-worker \
+  --name taskbridge-worker \
   --env-file .env \
-  notion-tasks-pg-sync notion-sync worker
+  taskbridge taskbridge worker
 
 # Run Reconciliation one-off task
 docker run --rm \
   --env-file .env \
-  notion-tasks-pg-sync notion-sync reconcile
+  taskbridge taskbridge reconcile
 
 # Alternatively, manage with Docker Compose:
 docker compose up -d api worker
@@ -174,11 +175,13 @@ docker compose run --rm reconcile
 |---|---|---|
 | **Check Liveness** | `curl http://localhost:3000/health` | HTTP probe (returns 200 without DB dependency) |
 | **Check Readiness** | `curl http://localhost:3000/ready` | HTTP probe verifying database connectivity |
-| **Apply Migrations** | `uv run notion-sync migrate` | Applies pending SQL migrations under advisory lock |
-| **Migration Status** | `uv run notion-sync migrate status` | Shows applied vs pending migrations |
-| **Backfill Tasks** | `uv run notion-sync backfill` | Executes paginated initial backfill |
-| **Backfill Dry-Run** | `uv run notion-sync backfill --dry-run` | Backfill dry run (fetch & normalize, no DB writes) |
-| **Manual Reconcile** | `uv run notion-sync reconcile` | Runs full reconciliation scan |
-| **Reconcile Dry-Run** | `uv run notion-sync reconcile --dry-run` | Reconciliation dry run |
-| **Requeue Failed Events** | `uv run notion-sync retry-failed` | Requeues failed inbox events back to pending |
-| **Recover Stuck Leases** | `uv run notion-sync recover-stuck` | Recovers expired worker processing leases |
+| **Apply Migrations** | `uv run taskbridge migrate` | Applies pending SQL migrations under advisory lock |
+| **Migration Status** | `uv run taskbridge migrate status` | Shows applied vs pending migrations |
+| **Backfill Tasks** | `uv run taskbridge backfill` | Executes paginated initial backfill |
+| **Backfill Dry-Run** | `uv run taskbridge backfill --dry-run` | Backfill dry run (fetch & normalize, no DB writes) |
+| **Manual Reconcile** | `uv run taskbridge reconcile` | Runs full reconciliation scan |
+| **Reconcile Dry-Run** | `uv run taskbridge reconcile --dry-run` | Reconciliation dry run |
+| **Requeue Failed Events** | `uv run taskbridge retry-failed` | Requeues failed inbox events back to pending |
+| **Recover Stuck Leases** | `uv run taskbridge recover-stuck` | Recovers expired worker processing leases |
+
+*(Note: All `taskbridge` CLI commands can also be invoked via the `notion-sync` alias for backwards compatibility).*

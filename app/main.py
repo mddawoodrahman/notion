@@ -1,3 +1,8 @@
+"""TaskBridge — Notion to PostgreSQL Sync Engine.
+
+FastAPI application factory, lifecycle, and server entrypoint.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -22,7 +27,8 @@ def create_app(
     cfg = config or get_config()
 
     app = FastAPI(
-        title="Notion Tasks to PostgreSQL Sync Service",
+        title="TaskBridge API",
+        description="Reliable Notion-to-PostgreSQL synchronization API",
         version="0.1.0",
         lifespan=lifespan,
     )
@@ -42,7 +48,7 @@ app: FastAPI = create_app()
 
 def main() -> None:
     cfg = get_config()
-    logger.info("Starting Notion Tasks sync HTTP server...", extra={"port": cfg.PORT})
+    logger.info("Starting TaskBridge API HTTP server...", extra={"port": cfg.PORT})
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",

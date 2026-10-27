@@ -90,4 +90,4 @@ jobs:
           context: .
           file: ./Dockerfile
           push: false
-          tags: notion-sync:test
+          tags: taskbridge:test

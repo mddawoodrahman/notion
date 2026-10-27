@@ -1,4 +1,6 @@
 # syntax=docker/dockerfile:1
+# TaskBridge — Notion to PostgreSQL Sync Engine
+# Tagline: Bridge your tasks. Synchronize with confidence.
 FROM python:3.12-slim-bookworm AS builder
 
 WORKDIR /app
@@ -23,6 +25,10 @@ FROM python:3.12-slim-bookworm AS runner
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH"
+
+LABEL org.opencontainers.image.title="TaskBridge" \
+      org.opencontainers.image.description="TaskBridge is a Python-powered synchronization platform that replicates Notion tasks into PostgreSQL using FastAPI, durable webhook ingestion, and independent background processing." \
+      org.opencontainers.image.version="0.1.0"
 
 WORKDIR /app
 

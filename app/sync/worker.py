@@ -166,7 +166,7 @@ async def start_worker(
     except (ValueError, AttributeError):
         pass  # If run outside main thread
 
-    logger.info("Background sync worker started")
+    logger.info("TaskBridge Worker started")
 
     idle_delay_s = 1.0
     max_idle_delay_s = 30.0
@@ -210,4 +210,4 @@ async def start_worker(
             except TimeoutError:
                 pass
 
-    logger.info("Worker stopped gracefully")
+    logger.info("TaskBridge Worker stopped gracefully")

@@ -1,4 +1,4 @@
-"""CLI entrypoint for notion-sync operations."""
+"""CLI entrypoint for TaskBridge operations."""
 
 import asyncio
 import sys
@@ -17,8 +17,8 @@ from app.db.pool import close_pool, get_pool
 from app.logging_config import configure_logging, get_logger
 
 app = typer.Typer(
-    name="notion-sync",
-    help="Notion Tasks to PostgreSQL synchronization service CLI",
+    name="taskbridge",
+    help="TaskBridge - Notion to PostgreSQL Sync Engine CLI. Bridge your tasks. Synchronize with confidence.",
     no_args_is_help=True,
 )
 

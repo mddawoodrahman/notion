@@ -1,4 +1,6 @@
-# Spec: Notion Tasks → PostgreSQL Synchronization Service
+# Spec: TaskBridge — Notion Tasks → PostgreSQL Synchronization Service
+
+> **Bridge your tasks. Synchronize with confidence.**
 
 **Document type:** Engineering specification
 **Version:** 1.0 (draft for approval)

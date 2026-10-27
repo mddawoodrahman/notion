@@ -1,6 +1,8 @@
-# AGENTS.md — Notion Tasks → PostgreSQL Sync
+# AGENTS.md — TaskBridge (Notion Tasks → PostgreSQL Sync)
 
-V1 is a high-reliability, one-way synchronization engine from a Notion Tasks data source into PostgreSQL (schema `notion_sync`). Notion is the editing source of truth; PostgreSQL is a read-optimized replica. Built exclusively with Python 3.12+, FastAPI, Uvicorn, Psycopg 3, Pydantic v2, Typer, and uv.
+> **Bridge your tasks. Synchronize with confidence.**
+
+TaskBridge (V1) is a high-reliability, one-way synchronization engine from a Notion Tasks data source into PostgreSQL (schema `notion_sync`). Notion is the editing source of truth; PostgreSQL is a read-optimized replica. Built exclusively with Python 3.12+, FastAPI, Uvicorn, Psycopg 3, Pydantic v2, Typer, and uv.
 
 ## Read first
 
@@ -19,24 +21,24 @@ uv sync --all-extras --dev
 uv run ruff check app tests
 uv run ruff format --check app tests
 uv run mypy app tests
-uv run pytest                        # all suites (140 tests)
-uv run pytest tests/unit             # unit suite
-uv run pytest tests/integration      # integration suite against real PostgreSQL
-uv run pytest tests/e2e              # end-to-end acceptance suite
+uv run pytest                        # all suites (145 tests)
+uv run pytest tests/unit             # unit suite (95 tests)
+uv run pytest tests/integration      # integration suite against real PostgreSQL (41 tests)
+uv run pytest tests/e2e              # end-to-end acceptance suite (9 tests)
 
 # Services
 uv run uvicorn app.main:app --port 3000   # HTTP webhook receiver and health API
-uv run notion-sync worker                 # background async worker (separate process)
+uv run taskbridge worker                  # background async worker
 
 # Migrations & CLI Operations
-uv run notion-sync migrate                # apply database migrations
-uv run notion-sync migrate status         # inspect applied vs pending migrations
-uv run notion-sync backfill --dry-run     # backfill preview (fetch + normalize only)
-uv run notion-sync backfill               # initial paginated database backfill
-uv run notion-sync reconcile --dry-run    # scheduled reconciliation dry-run
-uv run notion-sync reconcile              # scheduled full reconciliation scan
-uv run notion-sync retry-failed           # requeue failed webhook events to pending
-uv run notion-sync recover-stuck          # recover expired worker processing leases
+uv run taskbridge migrate                # apply database migrations
+uv run taskbridge migrate status         # inspect applied vs pending migrations
+uv run taskbridge backfill --dry-run     # backfill preview (fetch + normalize only)
+uv run taskbridge backfill               # initial paginated database backfill
+uv run taskbridge reconcile --dry-run    # scheduled reconciliation dry-run
+uv run taskbridge reconcile              # scheduled full reconciliation scan
+uv run taskbridge retry-failed           # requeue failed webhook events to pending
+uv run taskbridge recover-stuck          # recover expired worker processing leases
 ```
 
 Before claiming completion: `uv run ruff check app tests && uv run ruff format --check app tests && uv run mypy app tests && uv run pytest`.
@@ -54,8 +56,8 @@ Before claiming completion: `uv run ruff check app tests && uv run ruff format -
 - `app/cli/` — Typer CLI entrypoints (`main.py`, `worker.py`, `backfill.py`, `reconcile.py`, `retry_failed.py`, `recover_stuck.py`).
 - `migrations/` — numbered transactional SQL migration files (`0001_init.sql`).
 - `tests/` — Pytest test suites (`unit/`, `integration/`, `e2e/`, `conftest.py`).
-- HTTP receiver and worker are separate processes: starting the API does **not** start the worker. Run `uv run notion-sync worker` concurrently.
-- No in-process scheduler: `notion-sync reconcile` must be scheduled externally (cron, systemd timer, Windows Task Scheduler, Kubernetes CronJob).
+- HTTP receiver and worker are separate processes: starting the API does **not** start the worker. Run `uv run taskbridge worker` concurrently.
+- No in-process scheduler: `taskbridge reconcile` must be scheduled externally (cron, systemd timer, Windows Task Scheduler, Kubernetes CronJob).
 
 ## Config and environment
 
@@ -63,7 +65,7 @@ Before claiming completion: `uv run ruff check app tests && uv run ruff format -
 - `APP_ENV` (or `NODE_ENV` fallback): `development`, `test`, or `production`.
 - Outside `APP_ENV=test`, config requires `DATABASE_URL`, `NOTION_API_KEY`, and `NOTION_DATABASE_ID`; production also requires `NOTION_WEBHOOK_VERIFICATION_TOKEN`.
 - `NOTION_VERSION` is pinned to `2026-03-11`.
-- Runtime uses pooled Neon `DATABASE_URL`; `notion-sync migrate` uses `DIRECT_DATABASE_URL` when set because session advisory locks require direct connections.
+- Runtime uses pooled Neon `DATABASE_URL`; `taskbridge migrate` uses `DIRECT_DATABASE_URL` when set because session advisory locks require direct connections.
 - `ALLOW_UNSIGNED_WEBHOOKS` and `DB_SSL_INSECURE` are development-only escape hatches; production rejects unsigned webhooks and enforces verified TLS.
 - `TEST_DATABASE_URL` is accepted for integration testing against an external database, but defaults to ephemeral local PostgreSQL instances.
 

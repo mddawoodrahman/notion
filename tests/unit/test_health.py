@@ -45,3 +45,19 @@ async def test_get_ready_returns_503_not_ready_when_database_is_unavailable() ->
         body = res.json()
         assert body["status"] == "not_ready"
         assert body["reason"] == "database_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_app_metadata_title_and_description() -> None:
+    test_config = validate_config({"NODE_ENV": "test", "PORT": "3000"})
+    app = create_app(config=test_config, check_db_ready=lambda: True)
+    assert app.title == "TaskBridge API"
+    assert app.description == "Reliable Notion-to-PostgreSQL synchronization API"
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.get("/openapi.json")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["info"]["title"] == "TaskBridge API"
+        assert data["info"]["description"] == "Reliable Notion-to-PostgreSQL synchronization API"

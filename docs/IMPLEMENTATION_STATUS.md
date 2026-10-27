@@ -1,7 +1,8 @@
 # Implementation Status
 
-**Project:** Notion Tasks → PostgreSQL Synchronization Service (V1, one-way)  
-**Repository:** `D:\Notion` (branch `main`)  
+**Project:** TaskBridge — Notion to PostgreSQL Sync Engine  
+**Tagline:** Bridge your tasks. Synchronize with confidence.  
+**Repository:** `D:\Notion` (branch `main`, package `taskbridge@0.1.0`)  
 **Last updated:** 2026-10-27  
 
 > Status rule: a phase is only "verified" for the environment in which it was actually exercised.
@@ -24,9 +25,9 @@ All 7 architectural invariants (INV-1 through INV-7) and all 14 operational feat
 - **INV-7 (Zero secret leakage):** Sensitive tokens (`NOTION_API_KEY`, `NOTION_WEBHOOK_VERIFICATION_TOKEN`, `DATABASE_URL` passwords) stripped from error messages, stack traces, and logs.
 
 ### Verification Status:
-- **Python 3.12 Test Suite:** **141 tests in 16 files pass** — 91 unit tests, **41 integration tests against real PostgreSQL 18** (ephemeral instance, zero DB mocks), and 9 acceptance tests.
+- **Python 3.12 Test Suite:** **145 tests in 17 files pass** — 95 unit tests, **41 integration tests against real PostgreSQL 18** (ephemeral instance, zero DB mocks), and 9 acceptance tests.
 - **Python Static Quality:** Strict `mypy` passes across all source files, `ruff check` passes with 0 lint violations, and `ruff format --check` confirms 100% compliant formatting.
-- **Neon Live Database Status:** Verified connectivity to Neon with `uv run notion-sync migrate status` confirming migration `0001_init.sql` is applied.
+- **Neon Live Database Status:** Verified connectivity to Neon with `uv run taskbridge migrate status` confirming migration `0001_init.sql` is applied.
 
 The HTTP webhook endpoint and live Notion API sync have **not** been tested in a deployed environment with real inbound webhook traffic.
 
@@ -53,11 +54,11 @@ The HTTP webhook endpoint and live Notion API sync have **not** been tested in a
 | `uv run ruff check app tests` | exit 0, 0 errors |
 | `uv run ruff format --check app tests` | exit 0, all files formatted |
 | `uv run mypy app tests` | exit 0, `Success: no issues found in 53 source files` |
-| `uv run pytest tests/unit` | 12 files, **91 tests passed** |
+| `uv run pytest tests/unit` | 13 files, **95 tests passed** |
 | `uv run pytest tests/integration` | 3 files, **41 tests passed** (real PostgreSQL 18 via ephemeral instance, zero DB mocks) |
 | `uv run pytest tests/e2e` | 1 file, **9 tests passed** (in-memory harness) |
-| `uv run pytest` | 16 files, **141 tests passed**, 0 failed |
-| `uv run notion-sync migrate status` | exit 0, `[X] 0001_init.sql (applied)` on Neon |
+| `uv run pytest` | 17 files, **145 tests passed**, 0 failed |
+| `uv run taskbridge migrate status` | exit 0, `[X] 0001_init.sql (applied)` on Neon |
 
 ## Technical audit remediation
 
@@ -114,16 +115,16 @@ by any scheduler in this codebase.
 
 1. Set `DATABASE_URL`, `DIRECT_DATABASE_URL`, `NOTION_API_KEY`, `NOTION_DATABASE_ID` (and
    `NOTION_DATA_SOURCE_ID` if the database has multiple data sources) in `.env` or host environment.
-2. Run `uv run notion-sync migrate`, then `uv run notion-sync migrate status` to confirm `0001_init.sql` is applied.
-3. Run `uv run notion-sync backfill --dry-run`, review the counts, then run `uv run notion-sync backfill`.
+2. Run `uv run taskbridge migrate`, then `uv run taskbridge migrate status` to confirm `0001_init.sql` is applied.
+3. Run `uv run taskbridge backfill --dry-run`, review the counts, then run `uv run taskbridge backfill`.
 4. Start the HTTP service (`uv run uvicorn app.main:app --port 3000`) on a public HTTPS host.
 5. Create the Notion webhook subscription pointing at `https://<host>/webhooks/notion`; read the
    verification token from the handshake log and set `NOTION_WEBHOOK_VERIFICATION_TOKEN`.
-6. Run `uv run notion-sync worker` continuously.
-7. Schedule `uv run notion-sync reconcile` (for example every 30 minutes); use `uv run notion-sync retry-failed`
-   and `uv run notion-sync recover-stuck` for operator recovery.
+6. Run `uv run taskbridge worker` continuously.
+7. Schedule `uv run taskbridge reconcile` (for example every 30 minutes); use `uv run taskbridge retry-failed`
+   and `uv run taskbridge recover-stuck` for operator recovery.
 
 ## Next action
 
-Supply the credentials above and run `uv run notion-sync migrate` followed by the dry-run backfill. Until that
+Supply the credentials above and run `uv run taskbridge migrate` followed by the dry-run backfill. Until that
 happens, the live integration must be reported as unverified, regardless of the green local suite.

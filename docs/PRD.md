@@ -1,13 +1,16 @@
 # Product Requirements Document (PRD)
 
-## Notion To Do → PostgreSQL Synchronization Service
+## TaskBridge — Notion To Do → PostgreSQL Synchronization Service
+
+> **Bridge your tasks. Synchronize with confidence.**
 
 **Document status:** Ready for implementation planning  
+**Product Name:** TaskBridge (Task Bridge)  
 **Version:** 1.0  
 **Prepared:** 21 October 2026  
 **Product owner:** Project owner / workspace administrator  
 **Scope:** One-way synchronization of a Notion task database into PostgreSQL  
-**Primary stack:** Notion API, Node.js, TypeScript, PostgreSQL on Neon  
+**Primary stack:** Python 3.12+ (FastAPI, Uvicorn, Psycopg 3, uv), PostgreSQL on Neon  
 
 ---
 
@@ -15,7 +18,8 @@
 
 | Field | Detail |
 |---|---|
-| Product | Notion Tasks PostgreSQL Sync |
+| Product | TaskBridge — Notion Tasks PostgreSQL Sync |
+| Tagline | Bridge your tasks. Synchronize with confidence. |
 | Release target | V1 — core data synchronization |
 | Source of truth | Notion master Tasks database |
 | Destination | Dedicated PostgreSQL database |

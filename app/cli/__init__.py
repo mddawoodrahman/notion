@@ -1,1 +1,1 @@
-"""CLI package for notion-sync commands."""
+"""CLI package for TaskBridge commands."""

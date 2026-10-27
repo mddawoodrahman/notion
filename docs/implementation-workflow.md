@@ -1,6 +1,8 @@
-# Implementation Workflow — Notion Tasks → PostgreSQL
+# Implementation Workflow — TaskBridge (Notion Tasks → PostgreSQL Sync Engine)
 
-**Purpose:** Build the V1 synchronization service described in `docs/PRD.md` safely and incrementally.
+> **Bridge your tasks. Synchronize with confidence.**
+
+**Purpose:** Build TaskBridge V1 as described in `docs/PRD.md` safely and incrementally.
 **Scope:** Notion → PostgreSQL synchronization only. Productivity analytics, reports, Python/Pandas, AI insights, daily snapshots, and task-history analytics are deferred.
 **Default stack:** Python 3.12+ (FastAPI, Uvicorn, Psycopg 3, uv), official Notion API, PostgreSQL on Neon, a durable PostgreSQL inbox, background worker, and scheduled reconciliation.
 

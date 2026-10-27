@@ -103,7 +103,7 @@ async def start_test_database() -> TestDatabase:
 
     initdb_bin, postgres_bin = find_postgres_binaries()
     port = get_free_port()
-    temp_dir = tempfile.mkdtemp(prefix="notion-sync-pg-")
+    temp_dir = tempfile.mkdtemp(prefix="taskbridge-pg-")
     data_dir = os.path.join(temp_dir, "data")
     pw_file = os.path.join(temp_dir, "pw.txt")
 
