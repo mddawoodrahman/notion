@@ -83,7 +83,11 @@ class TestDatabase:
                     )
                 else:
                     self.proc.terminate()
-                    self.proc.wait(timeout=5)
+                    try:
+                        self.proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        self.proc.kill()
+                        self.proc.wait(timeout=2)
             except Exception:
                 pass
             self.proc = None
@@ -127,8 +131,21 @@ async def start_test_database() -> TestDatabase:
         raise RuntimeError(f"initdb failed: {res.stderr}\n{res.stdout}")
 
     # Launch postgres server
+    postgres_cmd = [
+        str(postgres_bin),
+        "-D",
+        data_dir,
+        "-p",
+        str(port),
+        "-h",
+        "127.0.0.1",
+        "-F",
+    ]
+    if sys.platform != "win32":
+        postgres_cmd.extend(["-k", temp_dir])
+
     proc = subprocess.Popen(
-        [str(postgres_bin), "-D", data_dir, "-p", str(port)],
+        postgres_cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -137,6 +154,8 @@ async def start_test_database() -> TestDatabase:
     # Wait for postgres to be ready and create notion_test database
     ready = False
     for _ in range(50):
+        if proc.poll() is not None:
+            break
         try:
             with psycopg.connect(
                 f"postgresql://postgres:postgres@127.0.0.1:{port}/postgres",
@@ -151,15 +170,35 @@ async def start_test_database() -> TestDatabase:
             time.sleep(0.1)
 
     if not ready:
+        error_details = ""
         try:
-            if sys.platform == "win32":
-                subprocess.run(["taskkill", "/PID", str(proc.pid), "/F", "/T"], capture_output=True)
+            if proc.poll() is not None:
+                stdout_data, stderr_data = proc.communicate(timeout=1)
+                error_details = (
+                    f"\nProcess exited early with return code {proc.returncode}."
+                    f"\nSTDOUT:\n{stdout_data}\nSTDERR:\n{stderr_data}"
+                )
             else:
-                proc.terminate()
-        except Exception:
-            pass
+                if sys.platform == "win32":
+                    subprocess.run(
+                        ["taskkill", "/PID", str(proc.pid), "/F", "/T"], capture_output=True
+                    )
+                else:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait(timeout=2)
+                stdout_data, stderr_data = proc.communicate(timeout=2)
+                error_details = (
+                    f"\nProcess timed out without accepting connections."
+                    f"\nSTDOUT:\n{stdout_data}\nSTDERR:\n{stderr_data}"
+                )
+        except Exception as ex:
+            error_details = f"\nFailed capturing process diagnostics: {ex}"
         shutil.rmtree(temp_dir, ignore_errors=True)
-        raise RuntimeError("PostgreSQL server failed to start within timeout")
+        raise RuntimeError(f"PostgreSQL server failed to start within timeout.{error_details}")
 
     url = f"postgresql://postgres:postgres@127.0.0.1:{port}/notion_test"
     return TestDatabase(url=url, temp_dir=temp_dir, proc=proc)

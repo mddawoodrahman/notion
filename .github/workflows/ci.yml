@@ -49,6 +49,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y postgresql postgresql-client
+          sudo systemctl stop postgresql || true
+          sudo chmod 1777 /var/run/postgresql || true
           if command -v initdb >/dev/null 2>&1; then
             PG_BIN_DIR=$(dirname "$(command -v initdb)")
           else
