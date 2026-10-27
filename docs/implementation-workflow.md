@@ -2,7 +2,7 @@
 
 **Purpose:** Build the V1 synchronization service described in `docs/PRD.md` safely and incrementally.
 **Scope:** Notion → PostgreSQL synchronization only. Productivity analytics, reports, Python/Pandas, AI insights, daily snapshots, and task-history analytics are deferred.
-**Default stack:** Node.js + TypeScript, official Notion SDK/API, PostgreSQL on Neon, a durable PostgreSQL inbox, background worker, and scheduled reconciliation.
+**Default stack:** Python 3.12+ (FastAPI, Uvicorn, Psycopg 3, uv), official Notion API, PostgreSQL on Neon, a durable PostgreSQL inbox, background worker, and scheduled reconciliation.
 
 ## Operating contract for the AI agent
 
@@ -59,10 +59,10 @@ Acceptance gate:
 
 ## Phase 1 — Configuration and backend scaffold
 
-**Goal:** Establish a small maintainable TypeScript service.
+**Goal:** Establish a small maintainable Python / FastAPI service.
 
 Actions:
-- Create or update the project using existing conventions. If no service exists, use Node.js + TypeScript, an HTTP framework only if needed, the official Notion SDK, `pg`, and environment validation.
+- Create or update the project using existing conventions. Use Python 3.12+, FastAPI, Uvicorn, Psycopg 3, Pydantic v2, Typer, and environment validation.
 - Add scripts for development, build, start, lint/typecheck, tests, database migration, backfill, and reconciliation.
 - Add `/health` liveness and `/ready` readiness endpoints; readiness should check essential configuration and database connectivity without leaking internal data.
 - Add `.env.example`; ensure `.env`, build artifacts and local secrets are ignored.

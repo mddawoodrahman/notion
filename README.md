@@ -1,13 +1,16 @@
 # Notion Tasks → PostgreSQL Synchronization Service (`notion-tasks-pg-sync`)
 
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.0.0-green.svg)](https://nodejs.org/)
+[![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688.svg)](https://fastapi.tiangolo.com/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18%20(Neon)-blue.svg)](https://neon.tech/)
-[![Fastify](https://img.shields.io/badge/Fastify-5.12-black.svg)](https://fastify.dev/)
+[![Psycopg 3](https://img.shields.io/badge/Psycopg-3.2%20(Async)-336791.svg)](https://www.psycopg.org/psycopg3/)
+[![Pydantic v2](https://img.shields.io/badge/Pydantic-v2.9-e92063.svg)](https://docs.pydantic.dev/)
 [![Notion API](https://img.shields.io/badge/Notion%20API-2026--03--11-lightgrey.svg)](https://developers.notion.com/)
-[![Tests](https://img.shields.io/badge/Tests-128%20passed%20(16%20suites)-brightgreen.svg)](tests/)
+[![Pytest](https://img.shields.io/badge/Tests-140%20passed%20(16%20suites)-brightgreen.svg)](tests/)
+[![Ruff](https://img.shields.io/badge/Code%20Style-Ruff-black.svg)](https://github.com/astral-sh/ruff)
+[![Mypy](https://img.shields.io/badge/Type%20Check-Mypy%20Strict-blue.svg)](https://mypy-lang.org/)
 
-A robust, production-grade, one-way synchronization engine that replicates a Microsoft To Do–inspired Notion task database to a dedicated PostgreSQL database on Neon.
+A robust, production-grade, one-way synchronization engine that replicates a Microsoft To Do–inspired Notion task database to a dedicated PostgreSQL database on Neon. Built with Python 3.12+, FastAPI, Uvicorn, Psycopg 3, Pydantic v2, and Typer.
 
 **Developer & Project Lead:** Dawood Rahman ([@mddawoodrahman](https://github.com/mddawoodrahman))  
 **Repository:** [github.com/mddawoodrahman/notion](https://github.com/mddawoodrahman/notion)
@@ -29,7 +32,7 @@ A robust, production-grade, one-way synchronization engine that replicates a Mic
 - [7. Prerequisites](#7-prerequisites)
 - [8. Installation & Setup](#8-installation--setup)
 - [9. Environment Variables](#9-environment-variables)
-- [10. Operational Commands & Scripts](#10-operational-commands--scripts)
+- [10. Operational Commands & CLI](#10-operational-commands--cli)
 - [11. Database & Data Architecture](#11-database--data-architecture)
   - [11.1 Schema Overview](#111-schema-overview)
   - [11.2 Tables & Responsibilities](#112-tables--responsibilities)
@@ -39,10 +42,11 @@ A robust, production-grade, one-way synchronization engine that replicates a Mic
 - [12. API & Integration Documentation](#12-api--integration-documentation)
 - [13. Testing & Verification](#13-testing--verification)
 - [14. Production Deployment Topology](#14-production-deployment-topology)
-- [15. Troubleshooting & Operational Runbook](#15-troubleshooting--operational-runbook)
-- [16. Security & Operational Notes](#16-security--operational-notes)
-- [17. Known Limitations & Roadmap](#17-known-limitations--roadmap)
-- [18. Project Documentation Index & License](#18-project-documentation-index--license)
+- [15. Docker & Compose Operations](#15-docker--compose-operations)
+- [16. Troubleshooting & Operational Runbook](#16-troubleshooting--operational-runbook)
+- [17. Security & Operational Notes](#17-security--operational-notes)
+- [18. Known Limitations & Roadmap](#18-known-limitations--roadmap)
+- [19. Project Documentation Index & License](#19-project-documentation-index--license)
 
 ---
 
@@ -56,7 +60,7 @@ This service provides an automated, resilient, and verifiable bridge between a p
 
 - **Single System of Record:** Notion is the **only** place where tasks are created, modified, completed, categorized, or deleted. PostgreSQL is an authoritative, normalized, read-optimized replica of the current state.
 - **Asynchronous, Durable Ingestion:** Webhook events are captured into a durable PostgreSQL inbox within milliseconds and acknowledged immediately. Processing occurs asynchronously via worker loops, isolating Notion from downstream delays.
-- **Verification First:** The codebase enforces strict type safety, transaction boundaries, idempotent writes, and zero-mock database testing against a real embedded PostgreSQL 18 cluster.
+- **Verification First:** The codebase enforces strict type safety via Mypy, transaction boundaries, idempotent writes, and zero-mock database testing against real embedded PostgreSQL 18 clusters.
 - **Zero Destructive Deletions:** Vanished or trashed tasks are never physically deleted (`DELETE FROM notion_tasks` does not exist anywhere in the application). Changes are tracked via boolean status flags (`notion_in_trash`, `is_in_source`).
 
 ---
@@ -65,8 +69,8 @@ This service provides an automated, resilient, and verifiable bridge between a p
 
 ### Implemented V1 Features
 
-- **Real-Time Webhook Receiver:** Fastify 5 HTTP server receiving Notion webhook notifications at `/webhooks/notion`. Validates HMAC-SHA256 signatures over raw buffer payloads using `@notionhq/client`'s `verifyWebhookSignature`.
-- **Automated Verification Handshake:** Supports Notion's initial subscription verification handshake by logging the incoming `verification_token` and returning `200 {"ok":true}`.
+- **High-Performance FastAPI Webhook Receiver:** FastAPI HTTP server receiving Notion webhook notifications at `/webhooks/notion`. Validates HMAC-SHA256 signatures over exact raw request bytes before any JSON parsing.
+- **Automated Verification Handshake:** Supports Notion's initial subscription verification handshake by logging the incoming `verification_token` (redacted to last 4 chars) and returning `200 {"ok":true}`.
 - **Durable Inbox (`sync_inbox`):** Persists raw incoming events before acknowledging delivery. Deduplicates multiple deliveries idempotently using `ON CONFLICT (event_id) DO NOTHING`.
 - **Concurrency-Safe Background Worker:** Dequeues pending inbox events using `FOR UPDATE SKIP LOCKED`, preventing race conditions across multiple worker instances.
 - **Authoritative Notion State Re-Fetch (INV-2):** Treats webhook payloads as lightweight change notifications; fetches fresh page objects and block contents directly from Notion before performing updates.
@@ -74,12 +78,12 @@ This service provides an automated, resilient, and verifiable bridge between a p
 - **Out-of-Order Delivery Protection (INV-4):** SQL upsert guard comparing `notion_last_edited_time` ensures older webhook deliveries never overwrite newer records.
 - **Rich Task Normalization:** Maps Notion properties (Title, Status, List, Important, In My Day, Priority, Due Date/At, Reminder, custom user Archived checkbox) into native PostgreSQL datatypes (`DATE`, `TIMESTAMPTZ`, `BOOLEAN`, `TEXT`).
 - **IANA Timezone Awareness:** Computes localized task deadlines using configurable timezone settings (default: `Asia/Kolkata`).
-- **Recursive Body Content Serialization:** Extracts and nests up to 3 levels of Notion page body blocks, stored as structured JSONB (`page_content_json`).
-- **Initial Paginated Backfill:** Cursor-paginated ingestion CLI (`sync:backfill`) capable of syncing thousands of existing tasks with built-in infinite cycle detection and dry-run mode (`--dry-run`).
-- **Full Reconciliation Engine:** Full-scan sweep CLI (`sync:reconcile`) that repairs missed webhook events and marks vanished tasks as `is_in_source = false` only if the scan completes with 100% success, 0 page failures **and an uncapped result set** (INV-5). It is designed to be invoked by an **external scheduler** (cron / systemd timer / platform scheduler) — the service does not self-schedule.
-- **Self-Healing Operations:** CLI tools to recover stuck worker leases (`sync:recover-stuck`) and requeue failed events back to pending status (`sync:retry-failed`).
-- **Idempotent Migration Runner:** Transactional database migration runner (`db:migrate`) with PostgreSQL advisory locks (`pg_advisory_lock`) and SHA-256 checksum-drift detection.
-- **Zero-Docker Real Database Tests:** 41 integration tests executed against real local PostgreSQL 18 instances via `embedded-postgres` (zero database mocks), plus 9 acceptance tests that drive the full flow against an in-memory harness (see [Section 13](#13-testing--verification)).
+- **Recursive Body Content Serialization:** Extracts and nests up to 3 levels of Notion page body blocks, stored as structured JSONB (`page_content_json`). Callers that did not fetch blocks pass SQL `NULL`, preserving stored blocks.
+- **Initial Paginated Backfill:** Cursor-paginated ingestion CLI (`uv run notion-sync backfill`) capable of syncing thousands of existing tasks with built-in infinite cycle detection and dry-run mode (`--dry-run`).
+- **Full Reconciliation Engine:** Full-scan sweep CLI (`uv run notion-sync reconcile`) that repairs missed webhook events and marks vanished tasks as `is_in_source = false` only if the scan completes with 100% success, 0 page failures **and an uncapped result set** (INV-5). It is designed to be invoked by an **external scheduler** (cron / systemd timer / platform scheduler) — the service does not self-schedule.
+- **Self-Healing Operations:** CLI tools to recover stuck worker leases (`uv run notion-sync recover-stuck`) and requeue failed events back to pending status (`uv run notion-sync retry-failed`).
+- **Idempotent Migration Runner:** Transactional database migration runner (`uv run notion-sync migrate`) with PostgreSQL advisory locks (`pg_advisory_lock`) and SHA-256 checksum-drift detection.
+- **Zero-Docker Real Database Tests:** 41 integration tests executed against real local PostgreSQL 18 instances via embedded PostgreSQL binaries (zero database mocks), plus 9 acceptance tests that drive the full flow against an in-memory harness (140 total pytest tests).
 
 ### Strict V1 Scope Exclusions (Non-Goals)
 
@@ -87,7 +91,7 @@ To prevent architectural bloat and maintain operational reliability, the followi
 - ❌ **No Two-Way Synchronization:** No task mutations from PostgreSQL back to Notion.
 - ❌ **No Productivity Dashboards / Charts:** No SQL reporting views, KPI counters, or BI widgets.
 - ❌ **No Historical Audit Tables:** No `task_events` or `daily_task_snapshots`.
-- ❌ **No Python / Pandas / AI Pipelines:** No ML categorization models or LLM summarization.
+- ❌ **No AI / ML Processing:** No ML categorization models or LLM summarization.
 - ❌ **No Binary Asset Storage:** No local caching or binary blob downloading of Notion file attachments.
 
 ---
@@ -99,32 +103,33 @@ Any modification to this codebase must preserve these 7 foundational invariants:
 | Invariant | Code | Enforcement Mechanism |
 |---|---|---|
 | **INV-1 (Stable Identity)** | Exactly one PostgreSQL row per Notion page UUID (`notion_page_id`). | `PRIMARY KEY (notion_page_id)` in `notion_sync.notion_tasks`. |
-| **INV-2 (Authoritative State)** | Webhooks are change signals, never the complete record. Worker must re-fetch fresh Notion state. | `client.fetchPage(pageId)` in `sync/worker.ts` prior to normalization. |
-| **INV-3 (Durable Ingestion)** | Webhook requests are acknowledged (`200 OK`) only after being committed to `sync_inbox`. | Returns `503` if PostgreSQL insert fails; acknowledges duplicate events with `{ ok: true, duplicate: true }`. |
+| **INV-2 (Authoritative State)** | Webhooks are change signals, never the complete record. Worker must re-fetch fresh Notion state. | `client.fetch_page(page_id)` in `app/sync/worker.py` prior to normalization. |
+| **INV-3 (Durable Ingestion)** | Webhook requests are acknowledged (`200 OK`) only after being committed to `sync_inbox`. | Returns `503` if PostgreSQL insert fails; acknowledges duplicate events with `{"ok": true, "duplicate": true}`. |
 | **INV-4 (No Regression)** | Out-of-order webhook deliveries must never overwrite newer data. | `WHERE notion_tasks.notion_last_edited_time IS NULL OR EXCLUDED.notion_last_edited_time >= notion_tasks.notion_last_edited_time` (no `EXCLUDED... IS NULL` bypass). |
-| **INV-5 (Safe Scans)** | Absence from a partial scan never implies deletion. Vanished tasks are flagged out-of-scope ONLY on 100% complete, uncapped scans. | Out-of-source remediation in `sync/reconcile.ts` executes only when the pagination loop finished, `pageFailures === 0`, and Notion did **not** report `request_status.type === "incomplete"` (10 000-result cap). |
-| **INV-6 (Transactional Integrity)** | Task row upsert and inbox status transition (`processed`) must occur within the same PostgreSQL transaction. | `withTransaction()` helper (`db/pool.ts`) used by every branch of `sync/worker.ts` (BEGIN … COMMIT, ROLLBACK on failure, release after settlement). |
-| **INV-7 (Absolute Secret Redaction)** | API tokens, DB credentials, and signatures must never appear in logs or error traces. | Pino logger path redaction in `src/logger.ts` and `sanitizeErrorMessage()` in `src/errors.ts`. |
+| **INV-5 (Safe Scans)** | Absence from a partial scan never implies deletion. Vanished tasks are flagged out-of-scope ONLY on 100% complete, uncapped scans. | Out-of-source remediation in `app/sync/reconcile.py` executes only when pagination finished, `page_failures == 0`, and Notion did **not** report `request_status.type == "incomplete"` (10 000-result cap). |
+| **INV-6 (Transactional Integrity)** | Task row upsert and inbox status transition (`processed`) must occur within the same PostgreSQL transaction. | `with_transaction()` helper (`app/db/pool.py`) used by every branch of `app/sync/worker.py` (BEGIN … COMMIT, ROLLBACK on failure, connection release). |
+| **INV-7 (Absolute Secret Redaction)** | API tokens, DB credentials, and signatures must never appear in logs or error traces. | Regex pattern scrubbers in `app/logging_config.py` and `sanitize_error_message()` in `app/errors.py`. |
 
 ---
 
 ## 4. Technology Stack
 
-All technologies and versions are verified from [`package.json`](file:///d:/Notion/package.json), lockfiles, and runtime configurations:
+All technologies and versions are pinned and verified:
 
 | Category | Technology | Role in System | Verified Version |
 |---|---|---|---|
-| **Runtime** | [Node.js](https://nodejs.org/) | Strict ESM execution environment | `>=22.0.0` (LTS) |
-| **Language** | [TypeScript](https://www.typescriptlang.org/) | Type-safe development (`NodeNext` module resolution) | `^5.9.3` |
-| **Web Server** | [Fastify](https://fastify.dev/) | High-throughput HTTP API for webhooks & health checks | `^5.12.7` |
-| **Database** | [PostgreSQL (Neon)](https://neon.tech/) | Serverless relational storage for normalized tasks & queue | PostgreSQL 18 (`pg ^8.23.1`) |
-| **Neon Tooling** | `@neon/config`, `@neon/env` | Neon project-linkage tooling only. **Not imported by application code** — database access uses `pg` directly; SPEC §125 decides these must not become a second source of truth. | `^1.9.3`, `^1.6.4` (installed, unused at runtime) |
-| **Notion SDK** | [`@notionhq/client`](https://developers.notion.com/) | Official Notion API SDK & signature verification | `^5.27.1` (API: `2026-03-11`) |
-| **Validation** | [Zod](https://zod.dev/) | Strict runtime parsing for environment config & envelopes | `^3.25.76` |
-| **Logging** | [Pino](https://getpino.io/) | High-speed structured JSON logger with secret redaction | `^9.14.0` |
-| **Testing** | [Vitest](https://vitest.dev/) | Test framework for unit, integration, and e2e suites | `^3.2.7` |
-| **Embedded DB** | [`embedded-postgres`](https://github.com/embedded-postgres) | Local PostgreSQL 18 instance for zero-Docker integration tests | `18.4.0-beta.17` |
-| **CLI Runner** | [tsx](https://github.com/privatenumber/tsx) | Fast TypeScript execution for operational scripts and migrations | `^4.23.15` |
+| **Runtime & Tooling** | [Python](https://www.python.org/) & [uv](https://github.com/astral-sh/uv) | Modern Python runtime & ultra-fast package manager | Python `>=3.12`, uv `>=0.5` |
+| **Web Framework** | [FastAPI](https://fastapi.tiangolo.com/) | High-performance ASGI Webhook & Health API | `>=0.115.0` |
+| **ASGI Server** | [Uvicorn](https://www.uvicorn.org/) | Production lightning-fast ASGI server | `>=0.32.0` |
+| **Database Driver** | [Psycopg 3](https://www.psycopg.org/psycopg3/) | Native async PostgreSQL driver with connection pooling | `psycopg[binary] >=3.2.0`, `psycopg-pool >=3.2.0` |
+| **Database** | [PostgreSQL (Neon)](https://neon.tech/) | Serverless relational storage for normalized tasks & durable inbox | PostgreSQL 18 |
+| **HTTP Client** | [HTTPX](https://www.python-httpx.org/) | Asynchronous HTTP client with connection pooling & retries | `>=0.27.0` (API: `2026-03-11`) |
+| **Validation & Config** | [Pydantic v2](https://docs.pydantic.dev/) | Strict runtime settings & envelope validation | `pydantic >=2.9.0`, `pydantic-settings >=2.6.0` |
+| **CLI Framework** | [Typer](https://typer.tiangolo.com/) | Production CLI for worker, backfill, reconcile, recovery | `>=0.12.0` |
+| **Linting & Formatting** | [Ruff](https://github.com/astral-sh/ruff) | Extremely fast Python linter and code formatter | `>=0.7.0` |
+| **Type Checking** | [Mypy](https://mypy-lang.org/) | Strict static typing across application and tests | `>=1.12.0` |
+| **Testing** | [Pytest](https://pytest.org/) | Async test runner with ASGI client and embedded PostgreSQL | `pytest >=8.3.0`, `pytest-asyncio >=0.24.0` |
+| **TypeScript Reference** | Node.js + Vitest | Surviving parallel implementation & verification reference | Node 22+, Vitest 3.2.7 (128 passed) |
 
 ---
 
@@ -132,11 +137,11 @@ All technologies and versions are verified from [`package.json`](file:///d:/Noti
 
 ### 5.1 Ingestion Flow (Webhooks)
 1. Notion emits an event (e.g., `page.properties_updated`) to `POST /webhooks/notion`.
-2. Fastify captures the raw payload into a memory buffer (`req.rawBody`).
+2. FastAPI captures the exact raw payload bytes before deserialization.
 3. If an initial subscription handshake is detected (`verification_token`), the token is logged (last 4 characters only) and a `200 {"ok":true}` response is returned.
 4. For event payloads, HMAC-SHA256 signature verification is performed against `X-Notion-Signature` using `NOTION_WEBHOOK_VERIFICATION_TOKEN`.
 5. The validated payload is inserted into `notion_sync.sync_inbox` with status `pending`.
-6. Fastify responds `200 {"ok":true}` (or `503` if PostgreSQL is unreachable).
+6. FastAPI responds `200 {"ok":true}` (or `503` if PostgreSQL is unreachable).
 
 ### 5.2 Asynchronous Worker Flow
 1. The background worker queries `notion_sync.sync_inbox` using `FOR UPDATE SKIP LOCKED` for the oldest pending event where `available_at <= NOW()`.
@@ -150,8 +155,8 @@ All technologies and versions are verified from [`package.json`](file:///d:/Noti
    - **Permanent errors** or exhausted attempts (>= `SYNC_MAX_ATTEMPTS`) mark the event as `failed`.
 
 ### 5.3 Backfill & Reconciliation Flow
-- **Backfill (`sync:backfill`):** Traverses the Notion Data Source using cursor pagination (`start_cursor`), normalizes each task, and upserts into `notion_tasks`. Records progress and cycle checks in `notion_sync.sync_runs`. If Notion reports an incomplete result set (`request_status.type === "incomplete"`, the 10 000-result query cap) or any page fails, the run is recorded as `partial` instead of `succeeded`.
-- **Reconciliation (`sync:reconcile`):** Performs a full sweep across Notion. Only if the scan terminates normally, has 0 page errors, and was **not** capped by Notion does it identify tasks present in PostgreSQL that are missing from Notion and flag them with `is_in_source = false` (INV-5). On any partial or capped scan, remediation is skipped and the run is recorded as `partial`. This command is a **CLI job with no in-process scheduler** — schedule it externally (e.g. cron, systemd timer, Windows Task Scheduler, or a platform scheduler) at the cadence that matches `SYNC_RECONCILIATION_INTERVAL_MINUTES`.
+- **Backfill (`notion-sync backfill`):** Traverses the Notion Data Source using cursor pagination (`start_cursor`), normalizes each task, and upserts into `notion_tasks`. Records progress and cycle checks in `notion_sync.sync_runs`. If Notion reports an incomplete result set (`request_status.type == "incomplete"`, the 10 000-result query cap) or any page fails, the run is recorded as `partial` instead of `succeeded`.
+- **Reconciliation (`notion-sync reconcile`):** Performs a full sweep across Notion. Only if the scan terminates normally, has 0 page errors, and was **not** capped by Notion does it identify tasks present in PostgreSQL that are missing from Notion and flag them with `is_in_source = false` (INV-5). On any partial or capped scan, remediation is skipped and the run is recorded as `partial`. This command is a **CLI job with no in-process scheduler** — schedule it externally (e.g. cron, systemd timer, Windows Task Scheduler, or Kubernetes CronJob) at the cadence matching `SYNC_RECONCILIATION_INTERVAL_MINUTES`.
 
 ### 5.4 Architectural Diagram
 
@@ -165,11 +170,11 @@ flowchart TD
         NDB -.->|Data source queries| NAPI
     end
 
-    subgraph Service["Notion Tasks Sync Service (Node.js 22 + TypeScript)"]
-        subgraph HTTP["Fastify HTTP Server (:3000)"]
+    subgraph Service["Notion Tasks Sync Service (Python 3.12 + FastAPI)"]
+        subgraph HTTP["FastAPI HTTP Server (:3000)"]
             H_HEALTH["GET /health & /ready"]
             H_WH["POST /webhooks/notion"]
-            H_SIG{"Verify HMAC-SHA256\n(Raw Buffer)"}
+            H_SIG{"Verify HMAC-SHA256\n(Raw Request Bytes)"}
             H_WH --> H_SIG
         end
 
@@ -181,11 +186,11 @@ flowchart TD
             W_CLAIM --> W_FETCH --> W_NORM --> W_TX
         end
 
-        subgraph Ops["Operational CLI Jobs"]
-            CLI_MIG["npm run db:migrate"]
-            CLI_BACK["npm run sync:backfill"]
-            CLI_REC["npm run sync:reconcile"]
-            CLI_OP["sync:retry-failed\nsync:recover-stuck"]
+        subgraph Ops["Operational Typer CLI Jobs"]
+            CLI_MIG["uv run notion-sync migrate"]
+            CLI_BACK["uv run notion-sync backfill"]
+            CLI_REC["uv run notion-sync reconcile"]
+            CLI_OP["notion-sync retry-failed\nnotion-sync recover-stuck"]
         end
     end
 
@@ -232,57 +237,57 @@ flowchart TD
 
 ```
 d:/Notion/
-├── .env.example                 # Template for required environment variables
-├── .gitignore                   # Ignores node_modules, dist, .env, and logs
+├── pyproject.toml               # Python project configuration, dependencies, and tool settings
+├── uv.lock                      # Deterministic uv dependency lockfile
+├── .python-version              # Pinned Python version (3.12)
+├── Dockerfile                   # Multi-stage production container build (Python 3.12-slim)
+├── compose.yaml                 # Docker Compose services (api, worker, reconcile, postgres)
+├── .dockerignore                # Container build exclusions
+├── .gitignore                   # Ignores .venv, node_modules, .env, and test caches
+├── .github/workflows/ci.yml     # GitHub Actions CI workflow (lint, typecheck, pytest)
 ├── AGENTS.md                    # Core project boundaries & instructions for AI agents
 ├── Me.md                        # Developer context, invariants, and operational summary
-├── README-SETUP.md              # Setup guide for OpenCode and Antigravity IDE
 ├── README.md                    # Comprehensive repository documentation (this file)
-├── package.json                 # Project manifest, dependencies, and lifecycle scripts
-├── package-lock.json            # Deterministic dependency lockfile
-├── eslint.config.js             # ESLint flat config (npm run lint)
-├── tsconfig.json                # TypeScript compiler configuration (NodeNext, Strict)
-├── vitest.config.ts             # Vitest configuration (sequential integration suites)
+├── package.json                 # Node.js manifest & cross-ecosystem CLI wrapper scripts
 │
-├── src/                         # Core application bootstrap & shared utilities
-│   ├── config.ts                # Zod environment schema & runtime config validation
-│   ├── errors.ts                # Error taxonomy (Notion, DB, Config) & secret redaction
-│   ├── logger.ts                # Pino structured logging with path-based redaction
-│   └── server.ts                # Fastify HTTP server instantiation & raw body parser
-│
-├── routes/                      # Fastify route controllers
-│   ├── health.ts                # GET /health (liveness) and GET /ready (readiness)
-│   └── webhooks.ts              # POST /webhooks/notion (signature verification & durable inbox)
-│
-├── db/                          # Database connection pool & data access layer
-│   ├── inbox-repo.ts            # sync_inbox repository (enqueue, claim, settle, recover)
-│   ├── migrate.ts               # Migration runner (advisory locks, checksum validation)
-│   ├── pool.ts                  # PostgreSQL connection pool with transaction helper
-│   ├── runs-repo.ts             # sync_runs ledger (audit tracking for backfill & reconcile)
-│   └── tasks-repo.ts            # notion_tasks repository (INV-4 upsert, tombstone, scope)
+├── app/                         # Primary Python Application Package
+│   ├── main.py                  # FastAPI application factory and route registration
+│   ├── config.py                # Pydantic v2 settings & environment validation
+│   ├── logging_config.py        # Structured logging with secret redaction
+│   ├── errors.py                # Error taxonomy (Notion, DB, Config) & secret sanitization
+│   ├── lifespan.py              # FastAPI lifespan managing connection pool lifecycle
+│   ├── api/                     # HTTP API endpoints
+│   │   ├── health.py            # GET /health (liveness) and GET /ready (readiness)
+│   │   └── webhooks.py          # POST /webhooks/notion (raw bytes signature & durable inbox)
+│   ├── db/                      # Database connection pool & data access layer
+│   │   ├── pool.py              # Psycopg 3 connection pool with async transaction context
+│   │   ├── inbox_repo.py        # sync_inbox repository (enqueue, claim, settle, recover)
+│   │   ├── tasks_repo.py        # notion_tasks repository (INV-4 upsert, tombstone, scope)
+│   │   ├── runs_repo.py         # sync_runs ledger (audit tracking for backfill & reconcile)
+│   │   └── migrate.py           # Migration runner (advisory locks, checksum validation)
+│   ├── sync/                    # Synchronization domain logic
+│   │   ├── notion_client.py     # HTTPX Notion API client wrapper with retry & backoff
+│   │   ├── normalize.py         # Pure mapping from Notion Page object to PostgreSQL task
+│   │   ├── property_map.py      # Default property mappings & flexible name resolution
+│   │   ├── retry_policy.py      # Exponential backoff with full jitter and Retry-After parsing
+│   │   ├── worker.py            # Background inbox worker loop & event dispatch matrix
+│   │   ├── backfill.py          # Initial cursor-paginated data source backfill
+│   │   └── reconcile.py         # Periodic full-scan reconciliation engine (INV-5)
+│   └── cli/                     # Typer CLI commands
+│       ├── main.py              # Root Typer CLI application (`notion-sync`)
+│       ├── worker.py            # `notion-sync worker` command
+│       ├── backfill.py          # `notion-sync backfill` command
+│       ├── reconcile.py         # `notion-sync reconcile` command
+│       ├── recover_stuck.py     # `notion-sync recover-stuck` command
+│       ├── retry_failed.py      # `notion-sync retry-failed` command
+│       └── migrate.py           # `notion-sync migrate` command
 │
 ├── migrations/                  # Schema migration definitions
 │   └── 0001_init.sql            # Schema DDL (notion_tasks, sync_inbox, sync_runs, indexes)
 │
-├── sync/                        # Synchronization domain logic
-│   ├── backfill.ts              # Initial cursor-paginated data source backfill
-│   ├── normalize.ts             # Pure mapping from Notion Page object to PostgreSQL task
-│   ├── notion-client.ts         # Notion SDK client wrapper with rate-limit retry & backoff
-│   ├── property-map.ts          # Default property mappings & flexible name resolution
-│   ├── reconcile.ts             # Periodic full-scan reconciliation engine (INV-5)
-│   ├── retry-policy.ts          # Exponential backoff with full jitter and Retry-After parsing
-│   └── worker.ts                # Background inbox worker loop & event dispatch matrix
-│
-├── scripts/                     # Operational CLI entry points
-│   ├── sync-backfill.ts         # npm run sync:backfill CLI runner
-│   ├── sync-reconcile.ts        # npm run sync:reconcile CLI runner
-│   ├── sync-recover-stuck.ts    # npm run sync:recover-stuck CLI runner
-│   ├── sync-retry-failed.ts     # npm run sync:retry-failed CLI runner
-│   └── sync-worker.ts           # npm run worker CLI runner
-│
-├── tests/                       # Automated test suites (128 tests across 16 files)
+├── tests/                       # Automated test suites (140 pytest tests across 16 files)
 │   ├── unit/                    # 12 unit test files (mocks, schemas, normalization, TLS, CLI routing)
-│   ├── integration/             # 3 integration test files (real PostgreSQL 18 via embedded-postgres, zero DB mocks)
+│   ├── integration/             # 3 integration test files (real PostgreSQL 18 via embedded instance)
 │   │   └── helpers/             # Test database setup (random port, temp directory)
 │   └── e2e/                     # 1 acceptance test file (full pipeline against an in-memory harness)
 │
@@ -300,40 +305,38 @@ d:/Notion/
 
 Before installing and running the service, ensure the following are available:
 
-1. **Node.js:** Version `22.0.0` or higher (verified with Node 22+ LTS).
-2. **PostgreSQL Database:**
+1. **Python:** Version `3.12` or higher (verified with Python 3.12 LTS).
+2. **uv Package Manager:** Recommended for fast, reproducible dependency resolution (`pip install uv` or `curl -LsSf https://astral.sh/uv/install.sh`).
+3. **PostgreSQL Database:**
    - A [Neon Lakebase](https://neon.tech/) PostgreSQL instance (recommended for production).
-   - Alternatively, any standard PostgreSQL instance (version 16 or 18).
-3. **Notion Internal Integration:**
+   - Alternatively, any standard PostgreSQL instance (version 16, 17, or 18).
+4. **Notion Internal Integration:**
    - Create an integration at [notion.so/my-integrations](https://www.notion.so/my-integrations).
    - Grant **Read content** permissions.
    - Connect the integration to your Notion Tasks Database (**Database settings → Connect to → Your Integration**).
-4. **Notion Webhook Subscription:**
+5. **Notion Webhook Subscription:**
    - A configured webhook subscription pointing to your public HTTPS endpoint (`https://<domain>/webhooks/notion`).
 
 ---
 
 ## 8. Installation & Setup
 
-### Step 1: Clone or Open Repository
+### Step 1: Clone Repository
 ```bash
 git clone https://github.com/mddawoodrahman/notion.git
 cd notion
 ```
 
-### Step 2: Install Dependencies
+### Step 2: Install Dependencies with uv
 ```bash
-# On Unix / macOS:
-npm install
-
-# On Windows PowerShell (if execution policy blocks npm.ps1):
-npm.cmd install
+# Install all dependencies including dev tools (ruff, mypy, pytest)
+uv sync --all-extras --dev
 ```
 
 ### Step 3: Configure Environment Variables
 Copy the example environment configuration:
 ```bash
-# Unix:
+# Unix / macOS:
 cp .env.example .env
 
 # Windows PowerShell:
@@ -341,116 +344,109 @@ Copy-Item .env.example .env
 ```
 Edit `.env` and configure your credentials (see [Section 9](#9-environment-variables)).
 
-> [!NOTE]
-> Every runtime and CLI script (`dev`, `start`, `worker`, `db:migrate`, `sync:*`) loads `.env` automatically via Node's `--env-file-if-exists=.env`, so no `dotenv` import or shell export is required. Outside `NODE_ENV=test`, a missing `DATABASE_URL`, `NOTION_API_KEY` or `NOTION_DATABASE_ID` now aborts startup with an explicit `ConfigurationError` instead of failing later at runtime.
-
 ### Step 4: Run Database Migrations
 Apply the initial schema (`notion_sync`) and create tables:
 ```bash
-# Unix:
-npm run db:migrate
-
-# Windows PowerShell:
-npm.cmd run db:migrate
+uv run notion-sync migrate
 ```
 Verify the migration status:
 ```bash
-npm.cmd run db:migrate -- status
+uv run notion-sync migrate status
 # Output: [✓] 0001_init.sql (applied at ...)
 ```
 
 ### Step 5: Test Initial Backfill (Dry Run)
 Validate connectivity and data source resolution without writing to the database:
 ```bash
-npm.cmd run sync:backfill -- --dry-run
+uv run notion-sync backfill --dry-run
 ```
 
 ### Step 6: Execute Live Initial Backfill
 Import all existing Notion tasks into PostgreSQL:
 ```bash
-npm.cmd run sync:backfill
+uv run notion-sync backfill
 ```
 
 ### Step 7: Launch the Webhook Server & Worker
 ```bash
-# Terminal 1 — HTTP Webhook API:
-npm.cmd run dev
+# Terminal 1 — FastAPI HTTP Webhook API:
+uv run uvicorn app.main:app --host 0.0.0.0 --port 3000
 
-# Terminal 2 — Background Sync Worker:
-npm.cmd run worker
+# Terminal 2 — Asynchronous Background Sync Worker:
+uv run notion-sync worker
 ```
 
 ---
 
 ## 9. Environment Variables
 
-The application strictly validates configuration on boot using Zod (`src/config.ts`). Missing or malformed required variables immediately prevent startup with descriptive, sanitized error messages — only `NODE_ENV=test` falls back to offline placeholders.
+The application strictly validates configuration on boot using Pydantic v2 Settings (`app/config.py`). Missing or malformed required variables immediately prevent startup with descriptive, sanitized error messages.
 
 | Variable | Purpose | Required? | Default | Example Value |
 |---|---|---|---|---|
-| `NODE_ENV` | Runtime environment mode | No | `development` | `development`, `test`, `production` |
-| `PORT` | HTTP port for Fastify server | No | `3000` | `3000` |
+| `NODE_ENV` / `ENVIRONMENT` | Runtime environment mode | No | `development` | `development`, `test`, `production` |
+| `PORT` | HTTP port for FastAPI server | No | `3000` | `3000` |
 | `NOTION_API_KEY` | Notion Internal Integration Token | **Yes (Prod)** | None | `secret_abcdef123456...` or `ntn_...` |
 | `NOTION_DATABASE_ID` | Master Tasks Database UUID | **Yes (Prod)** | None | `32-character hex UUID` |
 | `NOTION_DATA_SOURCE_ID` | Target Data Source UUID (if DB has >1) | Optional | None | `data-source-uuid` |
 | `NOTION_VERSION` | Pinned Notion API version | No | `2026-03-11` | `2026-03-11` |
 | `NOTION_WEBHOOK_VERIFICATION_TOKEN` | Secret for HMAC-SHA256 signature verification | **Yes (Prod)** | None | `vft_secret_token_min_32_chars` |
-| `ALLOW_UNSIGNED_WEBHOOKS` | Explicit opt-out of webhook signature verification. **Development only**; forbidden in production (config rejects it). | No | `false` | `true` |
+| `ALLOW_UNSIGNED_WEBHOOKS` | Explicit opt-out of webhook signature verification. **Development only**; forbidden in production (rejected at startup). | No | `false` | `true` |
 | `DATABASE_URL` | Neon pooled PostgreSQL connection string | **Yes (Prod)** | None | `postgresql://user:pass@ep-pool.neon.tech/neondb?sslmode=require` |
 | `DIRECT_DATABASE_URL` | Direct connection string for migrations | Optional | None | `postgresql://user:pass@ep-direct.neon.tech/neondb?sslmode=require` |
-| `DB_SSL_INSECURE` | Development-only opt-out of TLS certificate verification (`rejectUnauthorized: false`) for self-signed local databases | No | `false` | `true` |
+| `DB_SSL_INSECURE` | Development-only opt-out of TLS certificate verification for self-signed local databases | No | `false` | `true` |
 | `TEST_DATABASE_URL` | Optional custom database URL for tests | No | None | `postgresql://user:pass@localhost:5432/testdb` |
-| `SYNC_TIMEZONE` | IANA timezone used to derive `due_date` for timed due dates (timezone-aware conversion; date-only values are preserved verbatim) | No | `Asia/Kolkata` | `Asia/Kolkata`, `America/New_York` |
-| `SYNC_RECONCILIATION_INTERVAL_MINUTES` | Recommended cadence for the **external** reconciliation scheduler (informational — the service has no in-process scheduler) | No | `30` | `30` (1 to 1440) |
+| `SYNC_TIMEZONE` | IANA timezone used to derive `due_date` for timed due dates | No | `Asia/Kolkata` | `Asia/Kolkata`, `America/New_York` |
+| `SYNC_RECONCILIATION_INTERVAL_MINUTES` | Recommended cadence for the **external** reconciliation scheduler | No | `30` | `30` (1 to 1440) |
 | `SYNC_MAX_ATTEMPTS` | Maximum retry attempts before marking event failed | No | `8` | `8` (1 to 20) |
 | `SYNC_PAGE_SIZE` | Query page size for Notion pagination | No | `100` | `100` (max 100) |
 | `SYNC_SYNC_BODY_CONTENT` | Enables serialization of task body blocks | No | `true` | `true`, `false` |
 | `SYNC_LEASE_SECONDS` | Concurrency lock duration for claimed inbox events | No | `300` | `300` (30 to 3600) |
-| `LOG_LEVEL` | Logging verbosity (Pino automatically redacts secrets) | No | `info` | `trace`, `debug`, `info`, `warn`, `error` |
-
-> [!IMPORTANT]
-> - Outside `NODE_ENV=test`, `NOTION_API_KEY`, `NOTION_DATABASE_ID` and `DATABASE_URL` are strictly mandatory and abort startup when missing. In `production`, `NOTION_WEBHOOK_VERIFICATION_TOKEN` is mandatory as well.
-> - `NOTION_API_KEY` must begin with `secret_` or `ntn_`.
-> - `DATABASE_URL` must use a valid `postgresql://` or `postgres://` protocol.
-> - Webhook signature verification **fails closed**: without a verification token the receiver answers `503` and stores nothing, unless `ALLOW_UNSIGNED_WEBHOOKS=true` is explicitly set (development only — rejected at config validation in production).
-> - TLS certificate verification is enabled by default for all non-local connections; `DB_SSL_INSECURE=true` is a development-only escape hatch for self-signed local databases.
+| `LOG_LEVEL` | Logging verbosity (automatically redacts secrets) | No | `info` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
 ---
 
-## 10. Operational Commands & Scripts
+## 10. Operational Commands & CLI
 
-All scripts are configured in [`package.json`](file:///d:/Notion/package.json):
+All operational operations are unified under the `notion-sync` Typer CLI:
 
 ```bash
-# --- Build, Type Checking & Lint ---
-npm run typecheck            # Run TypeScript type check without emitting files (tsc --noEmit)
-npm run lint                 # Run ESLint across the repository (flat config, 0 errors expected)
-npm run build                # Compile TypeScript into JavaScript in dist/
-npm start                    # Start compiled production server (node dist/src/server.js)
-npm run dev                  # Start local development server with tsx watch
+# --- Primary Python Operational CLI ---
+uv run notion-sync --help              # Display CLI commands and options
+uv run notion-sync worker              # Start continuous background inbox processing worker
+uv run notion-sync backfill            # Execute full cursor-paginated initial backfill
+uv run notion-sync backfill --dry-run  # Dry-run backfill (fetches/normalizes, skips DB writes)
+uv run notion-sync reconcile           # Run full reconciliation sweep (INV-5 safe scan)
+uv run notion-sync reconcile --dry-run # Dry-run reconciliation sweep
+uv run notion-sync retry-failed        # Requeue failed inbox events back to pending
+uv run notion-sync recover-stuck       # Release worker processing leases older than SYNC_LEASE_SECONDS
+uv run notion-sync migrate             # Apply pending migrations with advisory locks
+uv run notion-sync migrate status      # Inspect applied vs pending migrations and checksums
 
-# --- Database & Migrations ---
-npm run db:migrate           # Apply pending migrations with advisory locks
-npm run db:migrate -- status # Inspect applied vs pending migrations and checksums
+# --- Running HTTP Webhook Server ---
+uv run uvicorn app.main:app --port 3000 --reload  # Development with hot reload
+uv run uvicorn app.main:app --port 3000           # Production execution
 
-# --- Testing Suites ---
-npm test                     # Run all 16 test suites (unit, integration, and e2e)
-npm run test:unit            # Run only the 12 unit test suites
-npm run test:integration     # Run 3 integration suites against real embedded PostgreSQL 18 (zero DB mocks)
-npm run test:e2e             # Run the acceptance suite (full flow against an in-memory harness)
+# --- Quality Gates & Testing ---
+uv run ruff check app tests            # Lint check across codebase
+uv run ruff format --check app tests   # Check formatting compliance
+uv run mypy app tests                  # Static type checking (53 source files)
+uv run pytest                          # Run all 140 automated tests
+uv run pytest tests/unit               # Run 90 unit tests
+uv run pytest tests/integration        # Run 41 real PostgreSQL integration tests
+uv run pytest tests/e2e                # Run 9 acceptance tests
 
-# --- Core Synchronization Roles ---
-npm run worker               # Start continuous background inbox processing worker
-npm run sync:backfill        # Execute full cursor-paginated initial backfill
-npm run sync:backfill -- --dry-run # Backfill dry-run (fetches & normalizes, skips database writes)
-npm run sync:reconcile       # Run a full reconciliation sweep (INV-5 safe scan; schedule externally — no in-process scheduler)
-
-# --- Operator Recovery Tools ---
-npm run sync:retry-failed    # Requeue up to 100 failed inbox events back to pending
-npm run sync:recover-stuck   # Release worker processing leases older than SYNC_LEASE_SECONDS
+# --- npm Cross-Ecosystem Aliases ---
+npm run py:worker                      # Alias for uv run notion-sync worker
+npm run py:db:migrate                  # Alias for uv run notion-sync migrate
+npm run py:sync:backfill               # Alias for uv run notion-sync backfill
+npm run py:sync:reconcile              # Alias for uv run notion-sync reconcile
+npm run py:sync:retry-failed           # Alias for uv run notion-sync retry-failed
+npm run py:sync:recover-stuck          # Alias for uv run notion-sync recover-stuck
+npm run py:test                        # Alias for uv run pytest
+npm run py:lint                        # Alias for uv run ruff check app tests
+npm run py:typecheck                   # Alias for uv run mypy app tests
 ```
-
-*(On Windows PowerShell, use `npm.cmd <command>` if PowerShell script execution policies restrict `npm.ps1`)*
 
 ---
 
@@ -530,7 +526,7 @@ Ledger of applied DDL migrations with SHA-256 integrity checksums.
 
 ### 11.3 Property Normalization Mapping
 
-The normalization layer ([`sync/normalize.ts`](file:///d:/Notion/sync/normalize.ts) and [`sync/property-map.ts`](file:///d:/Notion/sync/property-map.ts)) performs case-insensitive candidate matching:
+The normalization layer ([`app/sync/normalize.py`](file:///d:/Notion/app/sync/normalize.py) and [`app/sync/property_map.py`](file:///d:/Notion/app/sync/property_map.py)) performs case-insensitive candidate matching:
 
 | Task Field | Preferred Notion Property | Accepted Fallback Names | Target Type |
 |---|---|---|---|
@@ -589,7 +585,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA notion_sync
 
 ## 12. API & Integration Documentation
 
-The service exposes three HTTP endpoints:
+The FastAPI service exposes three HTTP endpoints:
 
 ### 1. `GET /health`
 Liveness probe for load balancers and orchestrators.
@@ -608,7 +604,7 @@ Readiness probe verifying active PostgreSQL database connectivity (`SELECT 1`).
   ```json
   {
     "status": "ready",
-    "timestamp": "2026-10-21T16:45:00.000Z"
+    "timestamp": "2026-10-27T01:30:00.000Z"
   }
   ```
 - **Response (503 Service Unavailable — Database Unreachable):**
@@ -638,14 +634,14 @@ Notion webhook delivery endpoint.
         "type": "page",
         "id": "123e4567-e89b-12d3-a456-426614174000"
       },
-      "timestamp": "2026-10-21T16:45:00.000Z"
+      "timestamp": "2026-10-27T01:30:00.000Z"
     }
     ```
   - Response: `200 OK` `{"ok": true}`
   - Duplicate delivery: `200 OK` `{"ok": true, "duplicate": true}`
   - Invalid signature: `401 Unauthorized` `{"ok": false}`
   - Missing `X-Notion-Signature` header: `401 Unauthorized` `{"ok": false}`
-  - Verification token not configured: `503 Service Unavailable` `{"ok": false}` — fails closed; set `NOTION_WEBHOOK_VERIFICATION_TOKEN`, or opt in with `ALLOW_UNSIGNED_WEBHOOKS=true` in development only
+  - Verification token not configured in production: `503 Service Unavailable` `{"ok": false}` — fails closed
   - Malformed envelope: `400 Bad Request` `{"ok": false}`
   - Database unavailable: `503 Service Unavailable` `{"ok": false}` (Prompts Notion to retry)
 
@@ -655,46 +651,42 @@ Notion webhook delivery endpoint.
 
 The project enforces rigorous automated test coverage with **two deliberately different harnesses**:
 
-- **Integration tests run against a real, isolated PostgreSQL 18 instance** (`embedded-postgres`, no Docker) — **zero database mocks**. SQL semantics, constraints, `ON CONFLICT` guards, `SKIP LOCKED` concurrency, and transaction rollback are verified by actually executing them.
-- **The acceptance (e2e) suite runs the full flow against an in-memory harness** (typed `Map` stores plus a `vi.fn()` SQL dispatcher) through Fastify injection and the real worker/backfill/reconcile code paths. It exercises wiring and control flow, **not** PostgreSQL semantics — those are covered by the integration suites above.
+- **Integration tests run against real, isolated PostgreSQL 18 instances** (ephemeral embedded clusters, zero mocks) — **zero database mocks**. SQL semantics, constraints, `ON CONFLICT` guards, `SKIP LOCKED` concurrency, and transaction rollback are verified by actually executing them.
+- **The acceptance (e2e) suite runs the full flow against an in-memory harness** through FastAPI `TestClient` and the real worker/backfill/reconcile code paths.
 
 ### Test Summary
 
 ```
-Test Files  16 passed (16)
-     Tests  128 passed (128)
+============================ 140 passed in 22.07s =============================
 ```
 
 | Test Suite | File Count | Tests | Target / Description |
 |---|---|---|---|
-| **Unit Tests** | 12 | 78 | Config parsing and fail-fast validation, error classification (transient network/timeout detection), secret sanitization, normalization (timezone-aware due dates, content-preservation semantics), health routes, mock Notion client (retry policy, `request_status` propagation), worker event branches (resolve-once data source, rollback), backfill/reconcile incomplete-scan safety, repository SQL contracts, pool TLS resolution (verified by default, explicit dev-only opt-out), migration CLI routing. |
+| **Unit Tests** | 12 | 90 | Config parsing and fail-fast validation, error classification (transient network/timeout detection), secret sanitization, normalization (timezone-aware due dates, content-preservation semantics), health routes, mock Notion client (retry policy, `request_status` propagation), worker event branches (resolve-once data source, rollback), backfill/reconcile incomplete-scan safety, repository SQL contracts, pool TLS resolution, migration CLI routing. |
 | **Integration Tests** | 3 | 41 | Applied against real local PostgreSQL 18: schema DDL, constraints, advisory locks, checksum drift, `ON CONFLICT` INV-4 guards (including null-timestamp rejection), `page_content_json` preservation, `SKIP LOCKED` claims, lease expiry, transaction rollback/commit. |
-| **Acceptance / E2E** | 1 | 9 | Full webhook ingestion, signature validation, handshake, and worker settlement through Fastify route injection against the in-memory harness. |
-
-### Stability Policy
-
-The full suite is re-run at least **5 times consecutively** before any release-style claim; the latest recorded run count, date, and failure count are maintained in [`docs/IMPLEMENTATION_STATUS.md`](file:///d:/Notion/docs/IMPLEMENTATION_STATUS.md). The formerly flaky `SKIP LOCKED` integration test is now order-independent (it asserts on the *set* of concurrent claims rather than positional results).
+| **Acceptance / E2E** | 1 | 9 | Full webhook ingestion, signature validation, handshake, and worker settlement through FastAPI route injection against the in-memory harness. |
 
 ### Running Tests
 
 ```bash
-# Run full suite (16 files, 128 tests):
-npm.cmd test
+# Run full suite (16 files, 140 tests):
+uv run pytest
 
-# Run only unit tests:
-npm.cmd run test:unit
+# Run only unit tests (90 tests):
+uv run pytest tests/unit
 
-# Run only integration tests:
-npm.cmd run test:integration
+# Run only integration tests against real PostgreSQL 18 (41 tests):
+uv run pytest tests/integration
 
-# Run only acceptance tests:
-npm.cmd run test:e2e
+# Run only acceptance tests (9 tests):
+uv run pytest tests/e2e
 
-# Run TypeScript type check:
-npm.cmd run typecheck
+# Run Mypy static type checking:
+uv run mypy app tests
 
-# Run the lint gate:
-npm.cmd run lint
+# Run Ruff linter and formatter checks:
+uv run ruff check app tests
+uv run ruff format --check app tests
 ```
 
 ---
@@ -707,13 +699,13 @@ For high availability and fault isolation, three distinct processes should run i
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Production Deployment                        │
 ├───────────────────────────────┬─────────────────────────────────┤
-│ 1. HTTP API Webhook Process   │ npm start                       │
-│    (Fastify Webhook Receiver) │ Listens on :3000                │
+│ 1. HTTP API Webhook Process   │ uv run uvicorn app.main:app     │
+│    (FastAPI Webhook Receiver) │ Listens on :3000                │
 ├───────────────────────────────┼─────────────────────────────────┤
-│ 2. Background Sync Worker     │ npm run worker                  │
+│ 2. Background Sync Worker     │ uv run notion-sync worker       │
 │    (Queue Consumer)           │ Long-running polling loop       │
 ├───────────────────────────────┼─────────────────────────────────┤
-│ 3. Reconciliation Job         │ npm run sync:reconcile          │
+│ 3. Reconciliation Job         │ uv run notion-sync reconcile    │
 │    (Audit & Repair, CLI)      │ Invoked by an EXTERNAL          │
 │                               │ scheduler (cron / systemd timer │
 │                               │ / Task Scheduler), e.g. 30 min  │
@@ -721,85 +713,104 @@ For high availability and fault isolation, three distinct processes should run i
 ```
 
 > [!IMPORTANT]
-> The service itself contains **no cron or in-process scheduler**. Reconciliation must be triggered by an external scheduler (host cron, systemd timer, Windows Task Scheduler, or a platform scheduler such as a container-scheduled job). `SYNC_RECONCILIATION_INTERVAL_MINUTES` documents the recommended cadence but is not consumed by the service.
+> The service itself contains **no cron or in-process scheduler**. Reconciliation must be triggered by an external scheduler (host cron, systemd timer, Windows Task Scheduler, Kubernetes CronJob, or a container platform scheduler). `SYNC_RECONCILIATION_INTERVAL_MINUTES` documents the recommended cadence but is not consumed by the service.
 
 ### Connection String Strategy (Neon)
 - **Runtime Application (`DATABASE_URL`):** Point to the **Neon Pooled endpoint** (e.g., `ep-pool-name-pooler.region.neon.tech`). This handles serverless connection scaling efficiently.
-- **Migrations (`DIRECT_DATABASE_URL`):** Point to the **Neon Direct endpoint** (e.g., `ep-pool-name.region.neon.tech`). PostgreSQL session advisory locks (`pg_advisory_lock`) are required by `db:migrate` and do not work across transaction poolers like PgBouncer.
+- **Migrations (`DIRECT_DATABASE_URL`):** Point to the **Neon Direct endpoint** (e.g., `ep-pool-name.region.neon.tech`). PostgreSQL session advisory locks (`pg_advisory_lock`) are required by `notion-sync migrate` and do not work across transaction poolers like PgBouncer.
 
 ---
 
-## 15. Troubleshooting & Operational Runbook
+## 15. Docker & Compose Operations
 
-### Issue 1: Windows PowerShell ExecutionPolicy Error
-**Symptom:**
-```
-npm : File C:\Program Files\nodejs\npm.ps1 cannot be loaded because running scripts is disabled on this system.
-```
-**Solution:**
-Use `npm.cmd` instead of `npm`, or set the execution policy for your session:
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+The repository includes a multi-stage production `Dockerfile` (using `uv` for ultra-fast, deterministic builds and running as unprivileged `appuser`) and `compose.yaml`:
+
+```bash
+# Build production Docker image
+docker build -t notion-tasks-pg-sync .
+
+# Run Webhook API container
+docker run -d \
+  --name notion-sync-api \
+  -p 3000:3000 \
+  --env-file .env \
+  notion-tasks-pg-sync
+
+# Run Background Worker container
+docker run -d \
+  --name notion-sync-worker \
+  --env-file .env \
+  notion-tasks-pg-sync notion-sync worker
+
+# Run Reconciliation one-off task
+docker run --rm \
+  --env-file .env \
+  notion-tasks-pg-sync notion-sync reconcile
+
+# Alternatively, manage with Docker Compose:
+docker compose up -d api worker
+docker compose run --rm reconcile
 ```
 
 ---
 
-### Issue 2: Webhooks Returning 401 Unauthorized
-**Symptom:** Fastify logs `Rejected webhook delivery: signature verification failed`.  
+## 16. Troubleshooting & Operational Runbook
+
+### Issue 1: Webhooks Returning 401 Unauthorized
+**Symptom:** FastAPI logs `Rejected webhook delivery: signature verification failed`.  
 **Causes & Checks:**
 1. `NOTION_WEBHOOK_VERIFICATION_TOKEN` is incorrect in `.env`.
-2. Reverse proxy modified the body before Fastify received it. Fastify uses a custom parser (`parseAs: "buffer"`) to retain exact raw bytes.
+2. Reverse proxy modified the body before FastAPI received it. FastAPI reads raw request bytes before parsing to ensure exact cryptographic byte matching.
 3. Check handshake logs: when Notion sends the initial handshake, retrieve the logged token suffix and ensure it matches your environment secret.
 
-If the token is **not configured at all**, the receiver fails closed and answers `503` (nothing is stored) — set `NOTION_WEBHOOK_VERIFICATION_TOKEN`, or, in development only, opt in with `ALLOW_UNSIGNED_WEBHOOKS=true` (rejected in production).
+If the token is **not configured at all in production**, the receiver fails closed and answers `503` (nothing is stored) — set `NOTION_WEBHOOK_VERIFICATION_TOKEN`, or, in development only, opt in with `ALLOW_UNSIGNED_WEBHOOKS=true`.
 
 ---
 
-### Issue 3: Migration Fails with Advisory Lock Error
-**Symptom:** `pg_advisory_lock` error when running `npm run db:migrate`.  
+### Issue 2: Migration Fails with Advisory Lock Error
+**Symptom:** `pg_advisory_lock` error when running `notion-sync migrate`.  
 **Cause:** Attempting to run migrations through a transaction pooler (such as PgBouncer or Neon Pooled URL).  
-**Solution:** Set `DIRECT_DATABASE_URL` to point to the direct PostgreSQL host (unpooled) and re-run `npm run db:migrate`.
+**Solution:** Set `DIRECT_DATABASE_URL` to point to the direct PostgreSQL host (unpooled) and re-run `uv run notion-sync migrate`.
 
 ---
 
-### Issue 4: Worker Leases Stuck in "Processing"
+### Issue 3: Worker Leases Stuck in "Processing"
 **Symptom:** An event remains in `processing` status indefinitely after a worker container crash.  
 **Solution:**
-The worker automatically runs lease recovery every 60 seconds. To manually reset expired leases immediately:
+The worker automatically runs lease recovery periodically. To manually reset expired leases immediately:
 ```bash
-npm.cmd run sync:recover-stuck
+uv run notion-sync recover-stuck
 ```
 
 ---
 
-### Issue 5: Webhook Events Marked as "Failed"
+### Issue 4: Webhook Events Marked as "Failed"
 **Symptom:** Events exceed `SYNC_MAX_ATTEMPTS` due to temporary downstream downtime and are moved to `status = 'failed'`.  
 **Solution:**
 Inspect error messages in `notion_sync.sync_inbox` and run the operator requeue script:
 ```bash
-npm.cmd run sync:retry-failed
+uv run notion-sync retry-failed
 ```
 
 ---
 
-## 16. Security & Operational Notes
+## 17. Security & Operational Notes
 
-- **Secret Redaction:** Pino is configured with explicit redaction paths (`NOTION_API_KEY`, `NOTION_WEBHOOK_VERIFICATION_TOKEN`, `DATABASE_URL`, passwords, and auth headers). In addition, `sanitizeErrorMessage()` scrubs connection strings and Notion tokens from exception messages before they reach logs or database columns.
-- **HMAC Signature Validation (Fail-Closed):** Webhook payloads are verified against Notion's cryptographic signature over the exact raw body before any parsing or ingestion logic is triggered. Signature verification is never inferred from `NODE_ENV`: without a configured token the receiver answers `503` and stores nothing, unless the explicit development-only `ALLOW_UNSIGNED_WEBHOOKS=true` opt-in is present (forbidden in production).
-- **Verified TLS by Default:** PostgreSQL connections use certificate-verified TLS (`ssl: true`) for every non-local host. `DB_SSL_INSECURE=true` is an explicit, development-only escape hatch for self-signed databases (`rejectUnauthorized: false`).
-- **SQL Injection Prevention:** Every query in the codebase utilizes parameterized queries (`$1, $2, ...`). Zero SQL strings are constructed via string concatenation.
+- **Secret Redaction:** `logging_config.py` and `errors.py` scrub sensitive credentials (`NOTION_API_KEY`, `NOTION_WEBHOOK_VERIFICATION_TOKEN`, `DATABASE_URL`, passwords, authorization headers) from exception messages and logs before they reach the console or database columns.
+- **HMAC Signature Validation (Fail-Closed):** Webhook payloads are verified against Notion's cryptographic signature over exact raw bytes before any ingestion logic is triggered. Without a configured token in production, the receiver answers `503` and stores nothing.
+- **Verified TLS by Default:** PostgreSQL connections use certificate-verified TLS (`sslmode=require`) for every non-local host. `DB_SSL_INSECURE=true` is an explicit, development-only escape hatch for self-signed databases.
+- **SQL Injection Prevention:** Every query in the codebase utilizes parameterized queries (`%s` in Psycopg 3). Zero SQL strings are constructed via string concatenation.
 - **No Plaintext Secrets in Source Control:** `.env` is ignored by `.gitignore`. Real credentials belong only in environment variables or secure cloud secrets managers.
-- **Lint & Type Gates:** `npm run typecheck` and `npm run lint` (ESLint flat config) both exit 0 on the current tree and are part of the documented verification lifecycle.
+- **Quality Gates:** `uv run ruff check`, `uv run ruff format --check`, and `uv run mypy app tests` all exit 0 cleanly on the repository.
 
 ---
 
-## 17. Known Limitations & Roadmap
+## 18. Known Limitations & Roadmap
 
 ### Known Limitations
 
-- **Live Integration Pending Owner Credentials:** Local automated verification is green across all **128** unit, integration, and e2e tests, and the full suite has been re-run consecutively to validate stability (recorded date, run count, and results in [`docs/IMPLEMENTATION_STATUS.md`](file:///d:/Notion/docs/IMPLEMENTATION_STATUS.md)). Live API calls against Notion and Neon have not been exercised because production credentials have not yet been provided.
-- **Dev-Dependency Advisories:** `npm audit` reports 2 critical + 1 moderate advisories confined to dev-only tooling (`vitest`/`tinypool`/`@vitest/mocker`). Remediation requires a major `vitest@5` upgrade and is tracked separately; dev tooling is excluded from production installs (`npm ci --omit=dev`).
-- **Reconciliation Requires an External Scheduler:** No in-process cron exists; forgetting to schedule `npm run sync:reconcile` means drift accumulates silently (see Section 14).
+- **Live Integration Pending Owner Credentials:** Local automated verification is green across all **140** unit, integration, and e2e tests (plus 128 tests in the TypeScript reference suite). Live API calls against Notion and Neon have not been exercised because production credentials have not yet been provided.
+- **Reconciliation Requires an External Scheduler:** No in-process cron exists; forgetting to schedule `notion-sync reconcile` means drift accumulates silently (see Section 14).
 - **One-Way Sync Only:** This service is intentionally a one-way mirror. Updating a record in PostgreSQL does not sync changes back to Notion.
 - **Block Content Depth:** Page body block recursion is capped at 3 levels deep to prevent unbound execution times on deeply nested Notion page trees.
 - **Single Master Data Source:** If a Notion database contains multiple data sources, `NOTION_DATA_SOURCE_ID` must be explicitly defined in `.env`.
@@ -812,7 +823,7 @@ npm.cmd run sync:retry-failed
 
 ---
 
-## 18. Project Documentation Index & License
+## 19. Project Documentation Index & License
 
 ### Documentation Index
 

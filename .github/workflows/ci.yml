@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-lint-and-typecheck:
+    name: Python Lint, Format & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Verify lockfile consistency
+        run: uv lock --check
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Ruff Lint Check
+        run: uv run ruff check app tests
+
+      - name: Ruff Formatting Check
+        run: uv run ruff format --check app tests
+
+      - name: Mypy Static Type Check
+        run: uv run mypy app tests
+
+  python-test:
+    name: Python Test Suite (Unit, Integration, E2E)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL server and client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql postgresql-client
+          if command -v initdb >/dev/null 2>&1; then
+            PG_BIN_DIR=$(dirname "$(command -v initdb)")
+          else
+            PG_INITDB=$(find /usr/lib/postgresql/ -name initdb -type f 2>/dev/null | sort -V | tail -n 1)
+            PG_BIN_DIR=$(dirname "$PG_INITDB")
+          fi
+          if [ -n "$PG_BIN_DIR" ] && [ -d "$PG_BIN_DIR" ]; then
+            echo "$PG_BIN_DIR" >> $GITHUB_PATH
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Run Pytest Suite
+        run: uv run pytest
+
+  container-build:
+    name: Docker Container Build Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: notion-sync:test

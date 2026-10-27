@@ -1,26 +1,27 @@
 # Deployment and Secret Setup Guide
 
 **Project:** Notion Tasks → PostgreSQL Synchronization Service  
+**Runtime:** Python 3.12+ (FastAPI, Uvicorn, Psycopg 3, uv)  
 **Release:** V1
 
 ---
 
 ## 1. Environment and Secrets Setup
 
-All sensitive credentials must be set in your host's environment or secrets manager (e.g. Render, Railway, Fly.io, Vercel, or systemd). **Never commit credentials to source control.**
+All sensitive credentials must be set in your host's environment or secrets manager (e.g. Render, Railway, Fly.io, AWS ECS, or systemd). **Never commit credentials to source control.**
 
 ### Required Variables
 
 | Name | Example / Format | Purpose |
 |---|---|---|
-| `NODE_ENV` | `production` | Enforces strict validation and security modes |
+| `APP_ENV` (or `NODE_ENV`) | `production` | Enforces strict validation and security modes |
 | `PORT` | `3000` | HTTP server listening port |
 | `NOTION_API_KEY` | `secret_...` or `ntn_...` | Notion Internal Integration Token with read permissions |
 | `NOTION_DATABASE_ID` | `32-char hex UUID` | Master Tasks Database ID in Notion |
 | `NOTION_DATA_SOURCE_ID` | `UUID` (optional if DB has 1 source) | Master Tasks Data Source ID |
 | `NOTION_VERSION` | `2026-03-11` | Pinned Notion API version |
 | `NOTION_WEBHOOK_VERIFICATION_TOKEN` | `min 32-char string` | Notion Webhook Subscription verification secret (required in production; without it the receiver fails closed with `503`) |
-| `ALLOW_UNSIGNED_WEBHOOKS` | `false` | Development-only opt-out of webhook signature verification. Rejected when `NODE_ENV=production`. |
+| `ALLOW_UNSIGNED_WEBHOOKS` | `false` | Development-only opt-out of webhook signature verification. Rejected when `APP_ENV=production`. |
 | `DATABASE_URL` | `postgresql://...sslmode=require` | Pooled Neon PostgreSQL connection URL for app runtime |
 | `DIRECT_DATABASE_URL` | `postgresql://...sslmode=require` | Direct Neon PostgreSQL connection URL for migrations |
 | `DB_SSL_INSECURE` | `false` | Development-only opt-out of TLS certificate verification for self-signed local databases. Leave `false` for Neon. |
@@ -30,7 +31,7 @@ All sensitive credentials must be set in your host's environment or secrets mana
 | `SYNC_PAGE_SIZE` | `100` | Pagination page size for Notion queries (max 100) |
 | `SYNC_SYNC_BODY_CONTENT` | `true` | Enables serialization of task body blocks |
 | `SYNC_LEASE_SECONDS` | `300` | Concurrency lock lease duration for claimed inbox events |
-| `LOG_LEVEL` | `info` | Logging verbosity (Pino automatically redacts secrets) |
+| `LOG_LEVEL` | `info` | Logging verbosity (automatically redacts secrets) |
 
 ---
 
@@ -68,11 +69,11 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA notion_sync
 
 Run migrations before starting application traffic:
 ```bash
-npm run db:migrate
+uv run notion-sync migrate
 ```
-To check status:
+To check migration status:
 ```bash
-npm run db:migrate -- status
+uv run notion-sync migrate status
 ```
 
 ---
@@ -92,41 +93,92 @@ npm run db:migrate -- status
 
 ## 5. Process Execution Architecture
 
-For production deployments, three roles should run:
+For production deployments, three distinct roles should run:
 
-1. **HTTP Webhook & Health API:**
-   ```bash
-   npm start
-   # or node dist/src/server.js
-   ```
-2. **Background Sync Worker:**
-   ```bash
-   npm run worker
-   # or node dist/scripts/sync-worker.js
-   ```
-3. **Scheduled Reconciliation Job:**
-   Run via crontab, cloud cron, or Kubernetes CronJob every 30 minutes. The service ships **no in-process scheduler**; if this external trigger is not configured, reconciliation never runs:
-   ```bash
-   npm run sync:reconcile
-   # or node dist/scripts/sync-reconcile.js
-   ```
+### 1. HTTP Webhook & Health API (FastAPI + Uvicorn)
+```bash
+# Direct via uv:
+uv run uvicorn app.main:app --host 0.0.0.0 --port 3000
+
+# Or via Docker:
+docker compose up -d api
+```
+
+### 2. Background Sync Worker (Async Queue Consumer)
+```bash
+# Direct via uv:
+uv run notion-sync worker
+
+# Or via Docker:
+docker compose up -d worker
+```
+
+### 3. Scheduled Reconciliation Job
+Run via crontab, cloud cron, Kubernetes CronJob, or Task Scheduler every 30 minutes. The service ships **no in-process scheduler**; if this external trigger is not configured, reconciliation never runs:
+```bash
+# Direct via uv:
+uv run notion-sync reconcile
+
+# Or via Docker:
+docker compose run --rm reconcile
+```
 
 ### Initial Data Import:
-Before enabling live traffic or worker, run the initial backfill:
+Before enabling live webhook traffic or worker, run the initial backfill:
 ```bash
-npm run sync:backfill
+uv run notion-sync backfill
 ```
 Dry run is also available:
 ```bash
-npm run sync:backfill -- --dry-run
+uv run notion-sync backfill --dry-run
 ```
 
 ---
 
-## 6. Operator Troubleshooting Commands
+## 6. Docker & Compose Operations
 
-- **Check Health:** `curl https://<domain>/health`
-- **Check Readiness:** `curl https://<domain>/ready`
-- **Requeue Failed Events:** `npm run sync:retry-failed`
-- **Recover Stuck Leases:** `npm run sync:recover-stuck`
-- **Manual Reconciliation:** `npm run sync:reconcile`
+The repository includes a multi-stage `Dockerfile` and `compose.yaml`:
+
+```bash
+# Build production Docker image
+docker build -t notion-tasks-pg-sync .
+
+# Run Webhook API container
+docker run -d \
+  --name notion-sync-api \
+  -p 3000:3000 \
+  --env-file .env \
+  notion-tasks-pg-sync
+
+# Run Background Worker container
+docker run -d \
+  --name notion-sync-worker \
+  --env-file .env \
+  notion-tasks-pg-sync notion-sync worker
+
+# Run Reconciliation one-off task
+docker run --rm \
+  --env-file .env \
+  notion-tasks-pg-sync notion-sync reconcile
+
+# Alternatively, manage with Docker Compose:
+docker compose up -d api worker
+docker compose run --rm reconcile
+```
+
+---
+
+## 7. Operator Troubleshooting Commands
+
+| Task | CLI / HTTP Command | Description |
+|---|---|---|
+| **Check Liveness** | `curl http://localhost:3000/health` | HTTP probe (returns 200 without DB dependency) |
+| **Check Readiness** | `curl http://localhost:3000/ready` | HTTP probe verifying database connectivity |
+| **Apply Migrations** | `uv run notion-sync migrate` | Applies pending SQL migrations under advisory lock |
+| **Migration Status** | `uv run notion-sync migrate status` | Shows applied vs pending migrations |
+| **Backfill Tasks** | `uv run notion-sync backfill` | Executes paginated initial backfill |
+| **Backfill Dry-Run** | `uv run notion-sync backfill --dry-run` | Backfill dry run (fetch & normalize, no DB writes) |
+| **Manual Reconcile** | `uv run notion-sync reconcile` | Runs full reconciliation scan |
+| **Reconcile Dry-Run** | `uv run notion-sync reconcile --dry-run` | Reconciliation dry run |
+| **Requeue Failed Events** | `uv run notion-sync retry-failed` | Requeues failed inbox events back to pending |
+| **Recover Stuck Leases** | `uv run notion-sync recover-stuck` | Recovers expired worker processing leases |

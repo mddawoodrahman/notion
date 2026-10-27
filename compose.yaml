@@ -1,0 +1,72 @@
+services:
+  # 1. FastAPI HTTP Webhook & Health API
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: notion-sync-api
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - PORT=3000
+      - APP_ENV=${APP_ENV:-production}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3000"]
+
+  # 2. Asynchronous Background Sync Worker
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: notion-sync-worker
+    env_file:
+      - path: .env
+        required: false
+    restart: unless-stopped
+    command: ["notion-sync", "worker"]
+
+  # 3. Scheduled Reconciliation Job (invoked periodically via cron / orchestrator)
+  reconcile:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: notion-sync-reconcile
+    profiles:
+      - ops
+    env_file:
+      - path: .env
+        required: false
+    command: ["notion-sync", "reconcile"]
+
+  # Optional local PostgreSQL container for development and offline testing
+  # (Production deployments connect to Neon via DATABASE_URL and DIRECT_DATABASE_URL)
+  postgres:
+    image: postgres:17-alpine
+    container_name: notion-sync-postgres
+    profiles:
+      - local-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-notion_sync}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-notion_sync}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

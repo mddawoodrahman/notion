@@ -1,92 +1,89 @@
 # AGENTS.md — Notion Tasks → PostgreSQL Sync
 
-V1 is a one-way sync from a Notion Tasks data source into PostgreSQL (schema `notion_sync`). Notion is the editing source of truth; PostgreSQL is a read-optimized replica. `docs/IMPLEMENTATION_STATUS.md` records what has actually been verified; live Notion/Neon behavior is still unverified, so never infer live success from a green local suite.
+V1 is a high-reliability, one-way synchronization engine from a Notion Tasks data source into PostgreSQL (schema `notion_sync`). Notion is the editing source of truth; PostgreSQL is a read-optimized replica. Built exclusively with Python 3.12+, FastAPI, Uvicorn, Psycopg 3, Pydantic v2, Typer, and uv.
 
 ## Read first
 
 - `docs/implementation-workflow.md` — phased protocol and acceptance gates; follow it.
 - `docs/PRD.md`, `docs/Notion_to_PostgreSQL_Sync_SPEC.md` — requirements and engineering contracts.
-- `docs/IMPLEMENTATION_STATUS.md` — current evidence and blockers; update it after every phase.
-- `.opencode/commands/build-notion-sync.md`, `.agents/skills/notion-postgres-sync/SKILL.md` — existing resume/phase workflows.
+- `docs/IMPLEMENTATION_STATUS.md` — current evidence and verification status; update it after every phase.
+- `docs/DEPLOYMENT_GUIDE.md` — deployment, environment configuration, and operation guide.
 
 ## Commands (run from repo root)
 
-Requires Node >=22 and npm (`package-lock.json` is the lockfile).
+Requires Python >=3.12 and [uv](https://github.com/astral-sh/uv) (`pyproject.toml` and `uv.lock` are the lockfile and manifest).
 
-```bash
-npm install
-npm run typecheck
-npm run lint
-npm test                 # all suites
-npm run test:unit
-npm run test:integration
-npm run test:e2e
-npm run build
-npm run dev              # HTTP receiver only
-npm start                # requires npm run build first
-npm run worker           # separate process from the HTTP receiver
-npm run db:migrate
-npm run db:migrate -- status
-npm run sync:backfill -- --dry-run
-npm run sync:backfill
-npm run sync:reconcile -- --dry-run
-npm run sync:reconcile
-npm run sync:retry-failed
-npm run sync:recover-stuck
+```powershell
+# Dependencies & Quality Gates
+uv sync --all-extras --dev
+uv run ruff check app tests
+uv run ruff format --check app tests
+uv run mypy app tests
+uv run pytest                        # all suites (140 tests)
+uv run pytest tests/unit             # unit suite
+uv run pytest tests/integration      # integration suite against real PostgreSQL
+uv run pytest tests/e2e              # end-to-end acceptance suite
+
+# Services
+uv run uvicorn app.main:app --port 3000   # HTTP webhook receiver and health API
+uv run notion-sync worker                 # background async worker (separate process)
+
+# Migrations & CLI Operations
+uv run notion-sync migrate                # apply database migrations
+uv run notion-sync migrate status         # inspect applied vs pending migrations
+uv run notion-sync backfill --dry-run     # backfill preview (fetch + normalize only)
+uv run notion-sync backfill               # initial paginated database backfill
+uv run notion-sync reconcile --dry-run    # scheduled reconciliation dry-run
+uv run notion-sync reconcile              # scheduled full reconciliation scan
+uv run notion-sync retry-failed           # requeue failed webhook events to pending
+uv run notion-sync recover-stuck          # recover expired worker processing leases
 ```
 
-Before claiming completion: `npm run typecheck && npm run lint && npm test`. For a focused loop, use `npx vitest run tests/unit/worker.test.ts` (add `-t "test name"` to filter). `npm test` boots three throwaway PostgreSQL clusters and runs files serially, so it is not a fast unit-only loop. On Windows PowerShell, use `npm.cmd` if `npm.ps1` is blocked.
+Before claiming completion: `uv run ruff check app tests && uv run ruff format --check app tests && uv run mypy app tests && uv run pytest`.
 
 ## Runtime and layout
 
-- `src/server.ts` — Fastify HTTP app (`/health`, `/ready`, `/webhooks/notion`); `routes/` handlers; `src/config.ts` Zod env validation; `src/logger.ts` and `src/errors.ts` redaction.
-- `db/` — `pg` pool, `withTransaction`, repositories, migration runner. `sync/` — Notion client, normalization, worker, backfill, reconcile. `scripts/` — CLI entrypoints; `migrations/` — numbered SQL.
-- HTTP receiver and worker are separate: `npm run dev` / `npm start` do **not** start the worker. Run `npm run worker` too.
-- No in-process scheduler. `sync:reconcile` must be scheduled externally (cron, systemd, Task Scheduler).
-- `npm run build` emits to `dist/`; `rootDir` is `.`, so the production entry is `dist/src/server.js` and `npm start` needs a build first. `dist/` is generated and gitignored — edit source, not build output.
-- ESM + `module: NodeNext`: relative imports in TS must keep the `.js` suffix. `package.json` is `"type": "module"`.
-- `@neon/config` and `@neon/env` are installed but not runtime-imported; database access uses `pg` directly.
+- `app/main.py` — FastAPI application factory, routing (`/health`, `/ready`, `/webhooks/notion`), and Uvicorn entrypoint.
+- `app/lifespan.py` — connection pool lifecycle context manager.
+- `app/config.py` — Pydantic Settings environment configuration with validation and secret sanitization.
+- `app/logging_config.py` — structured JSON logging with automatic secret token redaction.
+- `app/errors.py` — custom application error classes and message sanitizer.
+- `app/api/` — API route handlers (`health.py`, `webhooks.py`).
+- `app/db/` — Psycopg 3 connection pooling (`pool.py`), transactional migration runner (`migrate.py`), and repositories (`inbox_repo.py`, `tasks_repo.py`, `runs_repo.py`).
+- `app/sync/` — Notion API client (`notion_client.py`), task normalization (`normalize.py`, `property_map.py`), async worker (`worker.py`), backfill (`backfill.py`), reconciliation (`reconcile.py`), and exponential backoff retry policy (`retry_policy.py`).
+- `app/cli/` — Typer CLI entrypoints (`main.py`, `worker.py`, `backfill.py`, `reconcile.py`, `retry_failed.py`, `recover_stuck.py`).
+- `migrations/` — numbered transactional SQL migration files (`0001_init.sql`).
+- `tests/` — Pytest test suites (`unit/`, `integration/`, `e2e/`, `conftest.py`).
+- HTTP receiver and worker are separate processes: starting the API does **not** start the worker. Run `uv run notion-sync worker` concurrently.
+- No in-process scheduler: `notion-sync reconcile` must be scheduled externally (cron, systemd timer, Windows Task Scheduler, Kubernetes CronJob).
 
 ## Config and environment
 
-- All `package.json` scripts load `.env` via `--env-file-if-exists=.env`; ad-hoc `tsx`, `node`, or `npx vitest` invocations do not. The `db:migrate`, `sync:*`, `worker`, `dev`, and `start` commands therefore need a configured `.env` for live work.
-- Outside `NODE_ENV=test`, config requires `DATABASE_URL`, `NOTION_API_KEY`, and `NOTION_DATABASE_ID`; production also requires `NOTION_WEBHOOK_VERIFICATION_TOKEN`. `NODE_ENV=test` supplies placeholders only.
-- `NOTION_VERSION` is pinned by a Zod literal to `2026-03-11`; changing it requires a config change and verification against official Notion docs.
-- Runtime should use the pooled Neon `DATABASE_URL`; `db:migrate` uses `DIRECT_DATABASE_URL` when set because session advisory locks fail through a transaction pooler.
-- `ALLOW_UNSIGNED_WEBHOOKS` and `DB_SSL_INSECURE` are development-only escape hatches; production rejects unsigned webhooks and verifies TLS by default.
-- `TEST_DATABASE_URL` is accepted by config but not used by the integration suites — they always boot embedded PostgreSQL.
+- Environment variables are loaded automatically from `.env` via `python-dotenv` (outside `APP_ENV=test`).
+- `APP_ENV` (or `NODE_ENV` fallback): `development`, `test`, or `production`.
+- Outside `APP_ENV=test`, config requires `DATABASE_URL`, `NOTION_API_KEY`, and `NOTION_DATABASE_ID`; production also requires `NOTION_WEBHOOK_VERIFICATION_TOKEN`.
+- `NOTION_VERSION` is pinned to `2026-03-11`.
+- Runtime uses pooled Neon `DATABASE_URL`; `notion-sync migrate` uses `DIRECT_DATABASE_URL` when set because session advisory locks require direct connections.
+- `ALLOW_UNSIGNED_WEBHOOKS` and `DB_SSL_INSECURE` are development-only escape hatches; production rejects unsigned webhooks and enforces verified TLS.
+- `TEST_DATABASE_URL` is accepted for integration testing against an external database, but defaults to ephemeral local PostgreSQL instances.
 
 ## Invariants that must not regress
 
-- No physical deletes from `notion_sync.notion_tasks`. Trash/deletion is `notion_in_trash = true`; a vanished page is `is_in_source = false`.
-- Webhooks are change signals only. The worker re-fetches the page from Notion and upserts the task plus settles the inbox row in one `withTransaction`.
-- Preserve the INV-4 stale-write guard exactly: an older or `NULL` `notion_last_edited_time` must not overwrite a newer row. Do not reintroduce an `EXCLUDED... IS NULL` bypass.
-- Reconciliation may set `is_in_source = false` only after a complete, uncapped scan (`request_status.type !== "incomplete"`) with zero page failures. Partial scans never imply deletion.
-- Webhook signatures verify over the exact raw body; keep the `parseAs: "buffer"` parser in `src/server.ts`. Missing token fails closed with `503`.
-- Keep every query parameterized, the Notion page ID as the primary key, raw properties in JSONB, block recursion at 3 levels, and page size at 100 max.
-- Never log or commit secrets; never invent credentials, identifiers, or test results.
-
-## Migrations and data
-
-- Add a new numbered file (`migrations/000N_description.sql`); never edit an applied migration — SHA-256 checksum drift aborts `db:migrate`.
-- Migrations run in a transaction under a PostgreSQL advisory lock; the schema is `notion_sync`.
-- In the task upsert, `page_content_json = COALESCE($19::jsonb, stored)`: SQL `NULL` preserves existing content, while `[]` overwrites it. Pass null when blocks were not fetched.
-- Active-task queries exclude `is_in_source = false`, `notion_in_trash = true`, and `user_archived = true` unless deliberately inspecting inactive rows.
+- **INV-1 (Stable Identity):** Exactly one row per Notion page UUID in `notion_sync.notion_tasks`. No physical deletes (`DELETE FROM notion_tasks` is prohibited). Trash is `notion_in_trash = true`; vanished page is `is_in_source = false`.
+- **INV-2 (Authoritative Source):** Webhook payloads are lightweight change signals. The worker re-fetches authoritative page and block state from Notion before upserting.
+- **INV-3 (Durable Ingestion):** Webhook events are committed to `sync_inbox` before returning `200 OK`. If database is unreachable, return `503`.
+- **INV-4 (Protection against Out-of-Order Events):** Stale writes are rejected by checking `WHERE notion_tasks.notion_last_edited_time IS NULL OR EXCLUDED.notion_last_edited_time >= notion_tasks.notion_last_edited_time`. An older or NULL timestamp must never overwrite a newer row.
+- **INV-5 (Safe Reconciliation):** Reconciliation marks tasks `is_in_source = false` only after a provably complete, uncapped scan with zero page failures. Partial or failed scans never imply deletion.
+- **INV-6 (Atomic Updates):** Task row upsert and inbox event settlement occur in the same database transaction.
+- **INV-7 (Absolute Secret Redaction):** Secrets and tokens are never logged, formatted into exception strings, or committed.
 
 ## Testing
 
-- `tests/unit` uses mocks; `tests/e2e` uses an in-memory harness (wiring/control flow only, not SQL); `tests/integration` runs against real embedded PostgreSQL 18 with no Docker and no external database.
-- Vitest runs files serially (`fileParallelism: false`) because each integration suite starts its own cluster.
-- `tests/` is included in `tsconfig`, so `npm run typecheck` also checks tests.
-- No CI workflow is checked in; the local commands above are the verification gates.
-- Exact suite counts and dates belong in `docs/IMPLEMENTATION_STATUS.md`; re-run commands and record real output instead of copying stale numbers from README or status.
+- `tests/unit/`: fast unit tests with mocks.
+- `tests/integration/`: real PostgreSQL tests with transactional migrations, concurrency, and advisory locks.
+- `tests/e2e/`: full lifecycle acceptance flow with an in-memory harness.
+- Verification gates: `uv run ruff check app tests && uv run ruff format --check app tests && uv run mypy app tests && uv run pytest`.
 
 ## V1 scope guardrails
 
-No two-way sync, analytics/dashboards/reports, `task_events`, daily snapshots, Python/Pandas/AI insights, new task UI, or attachment binaries.
-
-## Work protocol
-
-- Audit before editing; preserve existing code, data, migrations, and credentials.
-- Implement one phase at a time, run its acceptance gate, then update `docs/IMPLEMENTATION_STATUS.md` with files, commands, actual results, and blockers.
-- If live credentials are unavailable, implement safe local work with mocks and state the precise blocker. Do not perform destructive database changes without authorization.
+No two-way sync, analytics/dashboards/reports, `task_events`, daily snapshots, ML/AI categorization models, or attachment binaries.

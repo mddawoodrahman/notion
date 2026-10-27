@@ -19,6 +19,10 @@
         "-y",
         "@drawio/mcp"
       ]
+    },
+    "neon": {
+      "url": "https://mcp.neon.tech/mcp",
+      "serverUrl": "https://mcp.neon.tech/mcp"
     }
   }
 }
