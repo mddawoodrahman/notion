@@ -15,3 +15,11 @@ __pycache__/
 graphify-out/
 .agents/
 .opencode/
+
+# Ralph working files
+prd.json
+progress.txt
+.last-branch
+scripts/ralph/archive/
+scripts/ralph/progress.txt
+scripts/ralph/.last-branch

@@ -6,6 +6,7 @@ FastAPI application factory, lifecycle, and server entrypoint.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 import uvicorn
@@ -36,6 +37,7 @@ def create_app(
     app.state.config = cfg
     app.state.pool = pool
     app.state.check_db_ready = check_db_ready
+    app.state.started_at = getattr(app.state, "started_at", None) or datetime.now(UTC)
 
     app.include_router(health_router)
     app.include_router(webhooks_router)

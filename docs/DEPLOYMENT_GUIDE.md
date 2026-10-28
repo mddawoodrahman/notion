@@ -175,6 +175,7 @@ docker compose run --rm reconcile
 |---|---|---|
 | **Check Liveness** | `curl http://localhost:3000/health` | HTTP probe (returns 200 without DB dependency) |
 | **Check Readiness** | `curl http://localhost:3000/ready` | HTTP probe verifying database connectivity |
+| **Check Health Monitor** | `curl http://localhost:3000/health/monitor` | Comprehensive telemetry (uptime, DB latency, pool stats, queue depths, stuck leases, last sync run) |
 | **Apply Migrations** | `uv run taskbridge migrate` | Applies pending SQL migrations under advisory lock |
 | **Migration Status** | `uv run taskbridge migrate status` | Shows applied vs pending migrations |
 | **Backfill Tasks** | `uv run taskbridge backfill` | Executes paginated initial backfill |

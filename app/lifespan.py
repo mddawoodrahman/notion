@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import FastAPI
 
@@ -14,6 +15,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Ensure config is initialized
     if not hasattr(app.state, "config") or app.state.config is None:
         app.state.config = get_config()
+
+    # Track startup timestamp for uptime monitoring
+    app.state.started_at = datetime.now(UTC)
 
     # Initialize connection pool if not already injected
     if not hasattr(app.state, "pool") or app.state.pool is None:
